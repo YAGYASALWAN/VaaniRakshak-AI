@@ -1,0 +1,68 @@
+# VoiceShield data-engineering configuration.
+# Keep preprocessing identical for bona fide and spoof audio.
+
+audio:
+  sample_rate: 16000
+  mono: true
+  # AASIST-style analysis window. Stored once here; never hard-code in library code.
+  window_seconds: 4.0
+  # 50% overlap: 0-4s, 2-6s, 4-8s, ...
+  hop_seconds: 2.0
+  # soundfile subtype for processed WAV files.
+  output_subtype: PCM_16
+
+segmentation:
+  # pad: zero-pad the tail so a clip shorter than window_seconds still yields one window.
+  # skip: drop that clip / trailing window entirely.
+  #
+  # Default is pad. Skip would silently discard short utterances, and the two
+  # source datasets may have different duration distributions. Dropping short
+  # clips could therefore become a class-correlated shortcut.
+  short_clip_policy: pad
+  # Pad at the end so onsets are not shifted.
+  pad_position: end
+
+validation:
+  min_duration_seconds: 0.05
+  # RMS below this is treated as digital silence.
+  silence_rms_threshold: 1.0e-4
+  # If fewer than this fraction of short frames have energy, the clip is
+  # "almost completely silent".
+  min_non_silent_ratio: 0.01
+  silence_frame_seconds: 0.02
+
+splits:
+  train_ratio: 0.8
+  dev_ratio: 0.1
+  test_ratio: 0.1
+  seed: 42
+
+paths:
+  raw_data: data/raw
+  processed_data: data/processed
+  manifests: data/manifests
+
+labels:
+  bona_fide: bonafide
+  spoof: spoof
+
+datasets:
+  indicvoices:
+    role: train_dev
+    default_label: bonafide
+    raw_subdir: indicvoices
+  indicsynth:
+    role: train_dev
+    default_label: spoof
+    raw_subdir: indicsynth
+  asvspoof:
+    # Held-out generalization benchmark. Do not train or tune on it.
+    role: external_benchmark
+    default_label: null
+    raw_subdir: asvspoof
+    use_for_training: false
+    use_for_hyperparameter_tuning: false
+  local:
+    role: smoke_test
+    default_label: null
+    raw_subdir: local

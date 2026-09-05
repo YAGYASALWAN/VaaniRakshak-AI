@@ -1,0 +1,9 @@
+numpy
+pandas
+torch
+torchaudio
+soundfile
+scipy
+pyyaml
+tqdm
+pytest

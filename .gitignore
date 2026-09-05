@@ -1,0 +1,77 @@
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Secrets and local env
+.env
+.env.*
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs and experiment artifacts
+logs/
+*.log
+
+# Model checkpoints (future milestones)
+models/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.bin
+
+# Raw and processed datasets — never commit audio or manifests
+data/raw/**
+!data/raw/.gitkeep
+!data/raw/**/.gitkeep
+data/processed/**
+!data/processed/.gitkeep
+!data/processed/**/.gitkeep
+data/manifests/**
+!data/manifests/.gitkeep
+!data/manifests/**/.gitkeep
+
+# Large / binary artifacts
+*.wav
+*.flac
+*.mp3
+*.ogg
+*.opus
+*.m4a
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.parquet
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
+*.pkl
+*.pickle
