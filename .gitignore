@@ -75,3 +75,7 @@ data/manifests/**
 *.rar
 *.pkl
 *.pickle
+
+# Generated metadata reports and acquisition exports
+data/reports/
+data/metadata/

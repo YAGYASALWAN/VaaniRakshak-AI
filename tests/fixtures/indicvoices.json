@@ -1,0 +1,162 @@
+[
+  {
+    "sample_id": "real_Hindi_0",
+    "source_file": "real/Hindi/0.wav",
+    "speaker_id": "Hindi_0",
+    "lang": "Hindi",
+    "gender": "male",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Hindi_1",
+    "source_file": "real/Hindi/1.wav",
+    "speaker_id": "Hindi_1",
+    "lang": "Hindi",
+    "gender": "female",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Hindi_2",
+    "source_file": "real/Hindi/2.wav",
+    "speaker_id": "Hindi_2",
+    "lang": "Hindi",
+    "gender": "male",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Hindi_3",
+    "source_file": "real/Hindi/3.wav",
+    "speaker_id": "Hindi_3",
+    "lang": "Hindi",
+    "gender": "female",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Hindi_4",
+    "source_file": "real/Hindi/4.wav",
+    "speaker_id": "Hindi_0",
+    "lang": "Hindi",
+    "gender": "male",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Hindi_5",
+    "source_file": "real/Hindi/5.wav",
+    "speaker_id": "Hindi_1",
+    "lang": "Hindi",
+    "gender": "female",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Hindi_6",
+    "source_file": "real/Hindi/6.wav",
+    "speaker_id": "Hindi_2",
+    "lang": "Hindi",
+    "gender": "male",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Hindi_7",
+    "source_file": "real/Hindi/7.wav",
+    "speaker_id": "Hindi_3",
+    "lang": "Hindi",
+    "gender": "female",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Punjabi_0",
+    "source_file": "real/Punjabi/0.wav",
+    "speaker_id": "Punjabi_0",
+    "lang": "Punjabi",
+    "gender": "male",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Punjabi_1",
+    "source_file": "real/Punjabi/1.wav",
+    "speaker_id": "Punjabi_1",
+    "lang": "Punjabi",
+    "gender": "female",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Punjabi_2",
+    "source_file": "real/Punjabi/2.wav",
+    "speaker_id": "Punjabi_2",
+    "lang": "Punjabi",
+    "gender": "male",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Punjabi_3",
+    "source_file": "real/Punjabi/3.wav",
+    "speaker_id": "Punjabi_3",
+    "lang": "Punjabi",
+    "gender": "female",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Punjabi_4",
+    "source_file": "real/Punjabi/4.wav",
+    "speaker_id": "Punjabi_0",
+    "lang": "Punjabi",
+    "gender": "male",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Punjabi_5",
+    "source_file": "real/Punjabi/5.wav",
+    "speaker_id": "Punjabi_1",
+    "lang": "Punjabi",
+    "gender": "female",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Punjabi_6",
+    "source_file": "real/Punjabi/6.wav",
+    "speaker_id": "Punjabi_2",
+    "lang": "Punjabi",
+    "gender": "male",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  },
+  {
+    "sample_id": "real_Punjabi_7",
+    "source_file": "real/Punjabi/7.wav",
+    "speaker_id": "Punjabi_3",
+    "lang": "Punjabi",
+    "gender": "female",
+    "duration": 4,
+    "sample_rate": 48000,
+    "channels": 1
+  }
+]

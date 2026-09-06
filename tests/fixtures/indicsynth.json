@@ -1,0 +1,178 @@
+[
+  {
+    "sample_id": "fake_Hindi_0",
+    "source_file": "fake/Hindi/0.wav",
+    "Target Speaker ID": "Hindi_0",
+    "Generative Model": "demo_generator_a",
+    "language": "Hindi",
+    "Gender": "Male",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Hindi_1",
+    "source_file": "fake/Hindi/1.wav",
+    "Target Speaker ID": "Hindi_1",
+    "Generative Model": "demo_generator_b",
+    "language": "Hindi",
+    "Gender": "Female",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Hindi_2",
+    "source_file": "fake/Hindi/2.wav",
+    "Target Speaker ID": "Hindi_2",
+    "Generative Model": "demo_generator_a",
+    "language": "Hindi",
+    "Gender": "Male",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Hindi_3",
+    "source_file": "fake/Hindi/3.wav",
+    "Target Speaker ID": "Hindi_3",
+    "Generative Model": "demo_generator_b",
+    "language": "Hindi",
+    "Gender": "Female",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Hindi_4",
+    "source_file": "fake/Hindi/4.wav",
+    "Target Speaker ID": "Hindi_0",
+    "Generative Model": "demo_generator_a",
+    "language": "Hindi",
+    "Gender": "Male",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Hindi_5",
+    "source_file": "fake/Hindi/5.wav",
+    "Target Speaker ID": "Hindi_1",
+    "Generative Model": "demo_generator_b",
+    "language": "Hindi",
+    "Gender": "Female",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Hindi_6",
+    "source_file": "fake/Hindi/6.wav",
+    "Target Speaker ID": "Hindi_2",
+    "Generative Model": "demo_generator_a",
+    "language": "Hindi",
+    "Gender": "Male",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Hindi_7",
+    "source_file": "fake/Hindi/7.wav",
+    "Target Speaker ID": "Hindi_3",
+    "Generative Model": "demo_generator_b",
+    "language": "Hindi",
+    "Gender": "Female",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Punjabi_0",
+    "source_file": "fake/Punjabi/0.wav",
+    "Target Speaker ID": "Punjabi_0",
+    "Generative Model": "demo_generator_a",
+    "language": "Punjabi",
+    "Gender": "Male",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Punjabi_1",
+    "source_file": "fake/Punjabi/1.wav",
+    "Target Speaker ID": "Punjabi_1",
+    "Generative Model": "demo_generator_b",
+    "language": "Punjabi",
+    "Gender": "Female",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Punjabi_2",
+    "source_file": "fake/Punjabi/2.wav",
+    "Target Speaker ID": "Punjabi_2",
+    "Generative Model": "demo_generator_a",
+    "language": "Punjabi",
+    "Gender": "Male",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Punjabi_3",
+    "source_file": "fake/Punjabi/3.wav",
+    "Target Speaker ID": "Punjabi_3",
+    "Generative Model": "demo_generator_b",
+    "language": "Punjabi",
+    "Gender": "Female",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Punjabi_4",
+    "source_file": "fake/Punjabi/4.wav",
+    "Target Speaker ID": "Punjabi_0",
+    "Generative Model": "demo_generator_a",
+    "language": "Punjabi",
+    "Gender": "Male",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Punjabi_5",
+    "source_file": "fake/Punjabi/5.wav",
+    "Target Speaker ID": "Punjabi_1",
+    "Generative Model": "demo_generator_b",
+    "language": "Punjabi",
+    "Gender": "Female",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Punjabi_6",
+    "source_file": "fake/Punjabi/6.wav",
+    "Target Speaker ID": "Punjabi_2",
+    "Generative Model": "demo_generator_a",
+    "language": "Punjabi",
+    "Gender": "Male",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  },
+  {
+    "sample_id": "fake_Punjabi_7",
+    "source_file": "fake/Punjabi/7.wav",
+    "Target Speaker ID": "Punjabi_3",
+    "Generative Model": "demo_generator_b",
+    "language": "Punjabi",
+    "Gender": "Female",
+    "duration": 4,
+    "sample_rate": 24000,
+    "channels": 1
+  }
+]

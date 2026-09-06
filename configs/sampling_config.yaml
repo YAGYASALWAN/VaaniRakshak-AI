@@ -1,0 +1,36 @@
+# Paths are relative to this config file. These are synthetic fixtures, not datasets.
+inputs:
+  indicvoices:
+    path: ../tests/fixtures/indicvoices.json
+    locator_prefix: synthetic-fixture/indicvoices/v1
+  indicsynth:
+    path: ../tests/fixtures/indicsynth.json
+    locator_prefix: synthetic-fixture/indicsynth/v1
+output: ../data/reports/demo
+sampling:
+  seed: 42
+  target_total_hours: 0.013333333333333334 # 48 seconds: 24 per class
+  languages: [Hindi, Punjabi]
+  # For real development: [Hindi, Punjabi, Tamil, Telugu, Bengali, Marathi]
+  # Only request languages observed in BOTH input classes.
+  target_hours_per_language: {}
+  max_speakers: 20
+  min_speakers_per_language: 2 # per language AND class
+  max_clips_per_speaker: 2 # across all languages/classes in the candidate plan
+  generator_balancing: true
+  max_generator_share: 0.6 # actual selected spoof seconds
+  balance_tolerance: 0.05 # relative class gap and target underfill tolerance
+  holdout_generators: [] # exact observed generator values reserved from this plan
+bias_thresholds:
+  categorical_medium: 0.2
+  categorical_high: 0.5
+  duration_ratio_medium: 1.25
+  duration_ratio_high: 2.0
+  speaker_share_medium: 0.1
+  speaker_share_high: 0.25
+  generator_share_medium: 0.6
+  generator_share_high: 0.8
+  rms_gap_medium: 0.03
+  rms_gap_high: 0.1
+  missing_medium: 0.2
+  missing_high: 0.8

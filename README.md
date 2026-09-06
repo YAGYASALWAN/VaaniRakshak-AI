@@ -18,7 +18,9 @@ Indian languages and mixed recording conditions are first-class requirements, no
 
 ## Current milestone
 
-**Dataset-engineering foundation.**
+**Milestone 2: Dataset Inspection, Sampling and Bias Audit (implementation; full-suite verification pending).**
+
+**NEURAL NETWORK TRAINING NOT STARTED.**
 
 You can:
 
@@ -128,7 +130,7 @@ VaaniRakshak-AI/
 │   ├── raw/{indicvoices,indicsynth,asvspoof,local}/
 │   ├── processed/{train,dev,test}/
 │   └── manifests/
-├── src/VaaniRakshak-AI/
+├── src/vaanirakshak/
 │   ├── config.py                     # YAML → typed dataclasses
 │   ├── exceptions.py
 │   └── data/
@@ -144,7 +146,7 @@ VaaniRakshak-AI/
 └── notebooks/
 ```
 
-`src/voiceshield/config.py` and `data/pipeline.py` were added on purpose: configuration must be typed and loadable from tests, and the CLI must not own the pipeline logic.
+`src/vaanirakshak/config.py` and `data/pipeline.py` were added on purpose: configuration must be typed and loadable from tests, and the CLI must not own the pipeline logic.
 
 `data/raw/local/` is a small extra folder for smoke-test files you create yourself. It is not a fourth research corpus.
 
@@ -208,6 +210,174 @@ A 5 s clip with a 4 s window and 2 s hop yields two windows: `0–4 s` (full) an
 - Peak normalization is off. Clipping on write is logged.
 - ASVspoof may be ingested later into the same schema but `use_for_training: false` in config.
 
-## Logical next milestone (do not start it in this pass)
+## Dataset Inspection, Sampling and Bias Audit
 
-**Corpus sampling + bias audit (still no neural net):** draw a stratified subset of IndicVoices-R and IndicSynth, fill speaker/language/generator fields, run speaker-disjoint splits, and compute tables for duration, loudness, sample-rate, language, and gender by class. Only after those distributions are understood should an AASIST baseline be trained — still holding ASVspoof 2021 DF out of training and tuning.
+**NEURAL NETWORK TRAINING NOT STARTED.** No dataset downloads occur in these tools.
+The default sampling config uses tiny synthetic metadata fixtures, clearly named
+`demo_generator_a` and `demo_generator_b`. Results from those fixtures describe
+the software's behavior, never the actual corpora.
+
+### Architecture and manifest compatibility
+
+Milestone 1's audio loader, transforms, pipeline, processed-record dataclass,
+split helpers, and original 12 tests are unchanged. The public data package now
+loads audio exports lazily, so metadata work does not import torch or soundfile.
+
+Adapters translate source-specific fields into the existing 16 manifest columns,
+plus channels, file format, age group, transcript, source language/speaker values,
+source speaker, source/target references, original split, role, metadata locator,
+RMS and silence observations. This pre-acquisition DataFrame permits null duration,
+sample rate, processed path and segment times. It is not a processed
+`ManifestRecord`, whose stricter audio invariants remain intact. Existing split
+helpers return the core columns; keep the inspection table and join by
+`(dataset, sample_id)` to retain extra provenance after using those helpers.
+
+An adapter is a translator, not a downloader or audio transform. IndicSynth's
+target speaker becomes `speaker_id`; source speaker and reference recordings
+stay separate. Reference audio is never treated as the generated audio path.
+Speaker IDs are namespaced by dataset by default. Supply a verified shared
+`namespace` only if two exports genuinely use the same identity domain.
+Do not claim disjointness across source/target roles merely because target IDs
+are disjoint: future split design must consider connected source speakers and
+reference recordings too. Running speaker and generator split functions in
+sequence can break the earlier constraint; joint constraints need explicit
+validation before any future training experiment.
+
+### Why these checks exist
+
+A naive merge confounds dataset with class: genuine audio comes from one source
+and spoof audio from another. A detector can get 99% accuracy on an equally
+confounded test set by recognizing recording noise, codecs, padding or language
+instead of synthesis. That result would not demonstrate cybersecurity utility.
+The audit always flags complete dataset/class confounding, even when measured
+distributions match.
+
+Identical 16 kHz mono processing standardizes model input. It cannot undo lossy
+codec artifacts, bandwidth limits, prior enhancement, microphones or room noise.
+Keep original measurements for the acquisition audit and re-audit processed
+audio later. Do not normalize only one class.
+
+Hours balance exposure better than counts when clip lengths differ: 1,000
+ten-second clips contain five times the time of 1,000 two-second clips. Sampling
+therefore uses original clip seconds. It rejects processed windows so overlapping
+audio is not counted repeatedly. Report both time and counts.
+
+Language is restricted to the observed class intersection. Speaker diversity
+reduces domination by a few voices. Generator names are retained verbatim,
+including previously unseen names, so later generator-disjoint experiments can
+test generalization to attacks produced by systems absent from training.
+Preserving metadata supports that experiment; it does not run it.
+
+ASVspoof is marked external and excluded from the primary audit/planner. It must
+not guide training, tuning, threshold optimization, or model selection. Inspect
+it separately when useful. Full datasets are intentionally not downloaded:
+first determine a justified subset from metadata and verify access/identities.
+
+### Offline examples
+
+Install the project in your existing virtual environment:
+
+```bash
+python -m pip install -e ".[dev,analysis]"
+python scripts/inspect_dataset.py --dataset indicvoices --metadata tests/fixtures/indicvoices.json --output data/reports/indicvoices-demo
+python scripts/inspect_dataset.py --dataset indicsynth --metadata tests/fixtures/indicsynth.json --output data/reports/indicsynth-demo
+python scripts/audit_datasets.py --config configs/sampling_config.yaml --plots
+python scripts/plan_sample.py --config configs/sampling_config.yaml
+python -m pytest -q
+```
+
+Without installing the project, set `PYTHONPATH=src` before commands (on Windows
+CMD use `set PYTHONPATH=src`). Metadata-only commands require numpy, pandas and
+PyYAML; plots additionally require matplotlib. A dependency-light test command is:
+
+```bash
+python -m unittest discover -s tests -p test_dataset_analysis.py -v
+```
+
+That command tests Milestone 2 only. It is not a substitute for the full pytest
+suite, which also needs the existing torch, torchaudio and soundfile dependencies.
+
+For real metadata, configure local CSV/JSON/JSONL exports in `inputs`.
+Multiple exports per dataset are supported by using a list of input specs.
+Paths in YAML resolve relative to the config file, not the working directory.
+CSV IDs retain leading zeros. Numeric durations must be seconds. Files are capped
+at 50 MiB and 100,000 rows; the in-memory greedy planner is for small development
+exports, not million-row corpus optimization.
+
+Each input spec can provide `language`, `namespace`, `field_map`, and
+`locator_prefix`. A field map is canonical field -> actual source key, including
+dotted nested keys such as `audio.path`. Known aliases are conveniences, not a
+claim that every release uses them. Numeric ASVspoof labels require a verified
+`label_map` in its input spec (for example, only after confirming the mirror's
+class mapping). Unknown labels fail explicitly.
+
+If sample ID/path is absent, use a stable locator prefix containing dataset
+revision, config/language, split and export identity. Row position is appended,
+so changing row order requires new provenance. Generated IDs are deterministic
+hashes of this locator, not invented source metadata. Actual audio location
+must still be resolved before acquisition. Source sample rate is not inferred
+from a dataset card or generator name; missing values remain null.
+
+The inspection command's `--audio-root` opts into local audio measurements using
+Milestone 1's loader and silence validator. It restricts access to that root,
+records decode errors, and never fetches URLs. RMS is an amplitude proxy, not
+perceptual LUFS; its denominator is measured clips only.
+
+### Sampling semantics and feasibility
+
+- Empty `languages` uses all observed common languages. The six-language starter
+  list is a suggestion until metadata confirms coverage.
+- `target_total_hours`, when non-null, overrides class targets and divides equally.
+  Otherwise specify `target_hours_per_class: {bonafide: ..., spoof: ...}`.
+- `target_hours_per_language` means hours **per class** for each named language.
+  Remaining class budget is divided across unspecified selected languages.
+- `max_speakers` is global; minimum speakers is per language and class; the clip
+  cap is global per namespaced speaker.
+- Missing duration, speaker, language, or spoof generator prevents eligibility;
+  excluded counts are reported. No labels, durations, or generators are fabricated.
+- Greedy selection prioritizes speaker coverage, language budget progress,
+  speaker clip counts, and optional generator time diversity, with seeded identity
+  hashes breaking ties. Input order does not affect results with stable IDs.
+- Whole clips never exceed time budgets. The maximum generator share applies to
+  actual selected spoof time; excess is removed and shortfalls disclosed.
+- Reserved `holdout_generators` are excluded using exact observed values.
+- Relative class imbalance and language underfill use `balance_tolerance`.
+  Unsatisfied coverage/balance yields `infeasible` and CLI exit code 2.
+  The heuristic may underfill even where a different combination exists.
+  Constraints are never silently relaxed. Candidate plans do not authorize downloads.
+
+### Transparent audit thresholds
+
+All thresholds are configurable through `bias_thresholds`. A value at or above
+the high threshold is HIGH, at or above medium is MEDIUM, otherwise LOW.
+
+| Check | Metric | MEDIUM | HIGH |
+| --- | --- | ---: | ---: |
+| Sample rate, channels, codec, format, language, gender | Total variation distance | 0.20 | 0.50 |
+| Duration | Larger mean / smaller mean | 1.25 | 2.00 |
+| Speaker dominance | Largest observed single-speaker share | 0.10 | 0.25 |
+| Generator dominance | Largest observed single-generator spoof share | 0.60 | 0.80 |
+| Loudness proxy | Absolute class mean RMS difference | 0.03 | 0.10 |
+| Missing metadata | Missing fraction in either relevant class | 0.20 | 0.80 |
+
+Categorical distance is half the sum of absolute probability differences: zero
+means identical observed distributions; one means disjoint support. Both file
+and audio-duration weights are evaluated; dominance also checks both. Missing
+values are excluded from distributions and reported separately, including fully
+unknown fields. One-class-only languages and complete dataset/class confounding
+are HIGH. No opaque combined score or statistical significance claim is made.
+Low risk on measured fields does not certify authenticity learning or fairness.
+
+### Generated reports
+
+Ignored under `data/reports/`: `dataset_summary.json`, `class_balance.csv`,
+`language_balance.csv`, `speaker_balance.csv`, `generator_balance.csv`,
+`language_generator.csv`, `bias_report.json`, `sampling_plan.json`,
+`candidate_plan.csv`, and optional `plots/`. Inspection also emits
+`normalized_metadata.csv`. Reports contain supplied-row scope and observed
+duration coverage. All-unknown duration yields null hours; partially known hours
+are a subtotal, not a full-corpus estimate.
+
+See [schema observations](docs/dataset_sources.md) for publisher evidence and
+manual checks, and [Milestone 2 handoff](docs/milestone2_handoff.md) for examples,
+the final file tree, and verification status. Stop here; do not start Milestone 3.

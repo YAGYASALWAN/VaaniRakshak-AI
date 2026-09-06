@@ -1,11 +1,26 @@
 """Public data-engineering API."""
 
-from vaanirakshak.data.audio_io import AudioData, load_audio, save_audio
-from vaanirakshak.data.metadata import ManifestRecord, MANIFEST_COLUMNS, append_manifest
-from vaanirakshak.data.pipeline import process_audio_file
-from vaanirakshak.data.preprocessing import convert_to_mono, resample_waveform, segment_waveform
-from vaanirakshak.data.splits import generator_disjoint_split, speaker_disjoint_split
-from vaanirakshak.data.validation import ValidationReport, validate_waveform
+from importlib import import_module
+
+# Preserve the public API without importing torch/audio libraries for metadata work.
+_MODULES = {
+    "audio_io": ("AudioData", "load_audio", "save_audio"),
+    "metadata": ("ManifestRecord", "MANIFEST_COLUMNS", "append_manifest"),
+    "pipeline": ("process_audio_file",),
+    "preprocessing": ("convert_to_mono", "resample_waveform", "segment_waveform"),
+    "splits": ("generator_disjoint_split", "speaker_disjoint_split"),
+    "validation": ("ValidationReport", "validate_waveform"),
+}
+
+
+def __getattr__(name: str) -> object:
+    """Load an existing public symbol only when requested."""
+    for module, names in _MODULES.items():
+        if name in names:
+            value = getattr(import_module(f"{__name__}.{module}"), name)
+            globals()[name] = value
+            return value
+    raise AttributeError(name)
 
 __all__ = [
     "AudioData",
