@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
 """Milestone 3 objective 1: inspect bounded public JSON metadata, never audio."""
 import argparse
+import getpass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import warnings
 
-from vaanirakshak.data.source_probe import run_probe
+from vaanirakshak.data.source_probe import MetadataClient, run_probe
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=None, help="New output directory")
+    parser.add_argument("--ask-token", action="store_true",
+                        help="Privately prompt for a Hugging Face read token")
     args = parser.parse_args()
+    token = None
+    if args.ask_token:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", getpass.GetPassWarning)
+                token = getpass.getpass("Hugging Face read token (hidden): ")
+        except (getpass.GetPassWarning, EOFError):
+            parser.exit(2, "A terminal with hidden input is required. Run in PowerShell or another terminal.\n")
     output = args.output or Path("data/metadata") / (
         "source_probe_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
     try:
-        report = run_probe(output)
+        report = run_probe(output, client=MetadataClient(token=token))
     except (OSError, ValueError) as exc:
         parser.exit(2, f"Probe failed: {exc}\n")
     compact = {

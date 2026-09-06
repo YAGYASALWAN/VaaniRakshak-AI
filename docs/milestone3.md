@@ -17,6 +17,20 @@ Run from the project root with the existing environment active:
 python scripts/probe_dataset_sources.py
 ```
 
+If a source returns 401/403, use a Hugging Face read token from the same account
+that has access to the dataset. Create it at https://huggingface.co/settings/tokens
+and run:
+
+```bash
+python scripts/probe_dataset_sources.py --ask-token
+```
+
+Paste the token at the hidden terminal prompt and press Enter. Nothing is shown
+while pasting. The token is kept in memory and added only to HTTPS metadata
+requests to the two approved hosts; redirects remain disabled. It is not written
+to project files or reports. Never paste the token into chat or a command argument.
+The token does not grant dataset access beyond the account's existing permissions.
+
 Upload the printed `probe_summary.json` path to the next chat turn. It contains
 field names, missing-value counts, subset availability and errors; it does not
 include transcripts, speaker values or signed audio URLs. Full JSON responses

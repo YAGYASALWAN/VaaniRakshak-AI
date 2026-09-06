@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from vaanirakshak.data.source_probe import (
-    LANGUAGES, SOURCES, MetadataClient, inspect_rows, run_probe, select_subsets,
+    LANGUAGES, SOURCES, MetadataClient, NoRedirects, inspect_rows, run_probe, select_subsets,
 )
 
 
@@ -35,6 +35,41 @@ class FakeClient:
 
 
 class SourceProbeTests(unittest.TestCase):
+    def test_optional_auth_header(self):
+        for token in (None, "hf_test_not_a_real_token"):
+            client = MetadataClient(token=token)
+            response = Mock()
+            response.headers = Message()
+            response.headers["Content-Type"] = "application/json"
+            response.read.return_value = b'{}'
+            context = Mock()
+            context.__enter__ = Mock(return_value=response)
+            context.__exit__ = Mock(return_value=False)
+            client.opener = Mock()
+            client.opener.open.return_value = context
+            for url in ("https://huggingface.co/api/datasets/ai4bharat/indicvoices_r",
+                        "https://datasets-server.huggingface.co/splits?dataset=ai4bharat/indicvoices_r"):
+                self.assertEqual(client.get(url), {})
+                request = client.opener.open.call_args.args[0]
+                self.assertEqual(request.get_header("Authorization"),
+                                 "Bearer " + token if token else None)
+                self.assertNotIn("hf_test", request.full_url)
+
+    def test_token_never_sent_to_unapproved_host(self):
+        client = MetadataClient(token="hf_test_not_a_real_token")
+        client.opener = Mock()
+        with self.assertRaises(ValueError):
+            client.get("https://example.invalid/splits")
+        client.opener.open.assert_not_called()
+        self.assertIsNone(NoRedirects().redirect_request(None, None, 302, "", {},
+                                                       "https://example.invalid"))
+
+    def test_invalid_token_rejected_without_echo(self):
+        for token in ("", "hf_secret\n", "hf_secret value"):
+            with self.assertRaises(ValueError) as error:
+                MetadataClient(token=token)
+            self.assertNotIn("hf_secret", str(error.exception))
+
     def test_selects_actual_case(self):
         payload = {"splits": [{"dataset": SOURCES["indicvoices"], "config": "hindi", "split": "train"}]}
         selected = select_subsets(payload, SOURCES["indicvoices"])

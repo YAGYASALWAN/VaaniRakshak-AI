@@ -24,13 +24,17 @@ class NoRedirects(HTTPRedirectHandler):
 
 
 class MetadataClient:
-    """Anonymous GET client restricted to the two public metadata API hosts.
+    """GET client restricted to the two metadata API hosts, with optional auth.
 
     Every response must be JSON, at most 2 MiB; cumulative response payload budget
-    is 32 MiB. No retries, tokens, dataset libraries or binary decoding are used.
+    is 32 MiB. Tokens stay in memory. No retries or binary decoding are used.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, token: str | None = None) -> None:
+        if token is not None and (not token or not token.isascii()
+                                  or any(c.isspace() for c in token)):
+            raise ValueError("Token must be nonempty ASCII without whitespace")
+        self._token = token
         self.bytes_read = 0
         self.opener = build_opener(NoRedirects())
 
@@ -51,6 +55,8 @@ class MetadataClient:
             raise ValueError("Metadata session payload budget exhausted")
         request = Request(url, headers={"Accept": "application/json",
                                       "User-Agent": "VaaniRakshak-schema-probe/0.1"})
+        if self._token:
+            request.add_header("Authorization", "Bearer " + self._token)
         with self.opener.open(request, timeout=20) as response:
             if response.headers.get_content_type() != "application/json":
                 raise ValueError("Refusing non-JSON response")
