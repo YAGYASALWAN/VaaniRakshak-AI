@@ -1,0 +1,4 @@
+# PyTorch/TorchAudio already installed as the matching CUDA 2.10.0 pair.
+# Do not replace the working GPU installation with a default CPU build.
+pyarrow>=23,<26
+soundfile>=0.13,<0.14

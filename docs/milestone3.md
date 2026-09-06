@@ -1,5 +1,11 @@
 # Milestone 3 — controlled real-data pilot
 
+**Latest direction:** authenticated metadata access succeeded for both sources.
+The user chose an accelerated Hindi/Punjabi GPU baseline. See
+[fast_baseline.md](fast_baseline.md) for the bounded acquisition, training and
+prediction command. The full research sequence below remains future work;
+the shortcut does not claim to complete those research checks.
+
 Milestone 2's full 50-test suite passed on the user's Windows environment
 (screenshot: 50 passed in 5.08s). Earlier Milestone 2 execution-environment
 limitations remain a record of that session, not the latest project test status.
