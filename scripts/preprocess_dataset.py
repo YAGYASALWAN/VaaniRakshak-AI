@@ -7,9 +7,9 @@ import argparse
 import logging
 from pathlib import Path
 
-from voiceshield.config import default_config_path, load_config
-from voiceshield.data.pipeline import process_audio_file
-from voiceshield.exceptions import AudioLoadError, AudioValidationError, ManifestSchemaError
+from vaanirakshak.config import default_config_path, load_config
+from vaanirakshak.data.pipeline import process_audio_file
+from vaanirakshak.exceptions import AudioLoadError, AudioValidationError, ManifestSchemaError
 
 
 def main() -> int:

@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import torchaudio
 
-from voiceshield.config import AudioConfig, SegmentationConfig
+from vaanirakshak.config import AudioConfig, SegmentationConfig
 
 logger = logging.getLogger(__name__)
 

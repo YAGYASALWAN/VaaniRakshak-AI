@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from voiceshield.exceptions import AudioLoadError
+from vaanirakshak.exceptions import AudioLoadError
 
 logger = logging.getLogger(__name__)
 

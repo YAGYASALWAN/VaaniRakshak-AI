@@ -13,9 +13,9 @@ from collections.abc import Iterable, Sequence
 import numpy as np
 import pandas as pd
 
-from voiceshield.config import SplitConfig
-from voiceshield.data.metadata import MANIFEST_COLUMNS, validate_manifest_frame
-from voiceshield.exceptions import SplitError
+from vaanirakshak.config import SplitConfig
+from vaanirakshak.data.metadata import MANIFEST_COLUMNS, validate_manifest_frame
+from vaanirakshak.exceptions import SplitError
 
 logger = logging.getLogger(__name__)
 

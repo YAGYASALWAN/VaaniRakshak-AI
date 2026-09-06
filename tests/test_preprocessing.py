@@ -10,20 +10,20 @@ import pytest
 import soundfile as sf
 import yaml
 
-from voiceshield.config import load_config
-from voiceshield.data.audio_io import load_audio
-from voiceshield.data.metadata import (
+from vaanirakshak.config import load_config
+from vaanirakshak.data.audio_io import load_audio
+from vaanirakshak.data.metadata import (
     MANIFEST_COLUMNS,
     ManifestRecord,
     append_manifest,
     records_to_frame,
     validate_manifest_frame,
 )
-from voiceshield.data.pipeline import process_audio_file
-from voiceshield.data.preprocessing import convert_to_mono, resample_waveform, segment_waveform
-from voiceshield.data.splits import generator_disjoint_split, speaker_disjoint_split
-from voiceshield.data.validation import validate_waveform
-from voiceshield.exceptions import ManifestSchemaError, SplitError
+from vaanirakshak.data.pipeline import process_audio_file
+from vaanirakshak.data.preprocessing import convert_to_mono, resample_waveform, segment_waveform
+from vaanirakshak.data.splits import generator_disjoint_split, speaker_disjoint_split
+from vaanirakshak.data.validation import validate_waveform
+from vaanirakshak.exceptions import ManifestSchemaError, SplitError
 
 
 def _tone(duration_s: float, sr: int, freq: float = 220.0) -> np.ndarray:

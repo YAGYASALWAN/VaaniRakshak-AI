@@ -7,10 +7,10 @@ import argparse
 import logging
 from pathlib import Path
 
-from voiceshield.config import default_config_path, load_config
-from voiceshield.data.audio_io import load_audio
-from voiceshield.data.validation import validate_audio_data
-from voiceshield.exceptions import AudioLoadError
+from vaanirakshak.config import default_config_path, load_config
+from vaanirakshak.data.audio_io import load_audio
+from vaanirakshak.data.validation import validate_audio_data
+from vaanirakshak.exceptions import AudioLoadError
 
 AUDIO_SUFFIXES = {".wav", ".flac", ".ogg", ".mp3", ".opus", ".m4a"}
 

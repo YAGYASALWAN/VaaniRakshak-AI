@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "voiceshield"
+name = "VaaniRakshak-AI"
 version = "0.1.0"
-description = "VoiceShield dataset-engineering foundation for synthetic-speech detection."
+description = "VaaniRakshak-AI dataset-engineering foundation for synthetic-speech detection."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

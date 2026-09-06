@@ -14,8 +14,8 @@ from typing import Any
 
 import numpy as np
 
-from voiceshield.config import ValidationConfig
-from voiceshield.data.audio_io import AudioData
+from vaanirakshak.config import ValidationConfig
+from vaanirakshak.data.audio_io import AudioData
 
 logger = logging.getLogger(__name__)
 

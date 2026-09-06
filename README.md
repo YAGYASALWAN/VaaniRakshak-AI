@@ -1,4 +1,4 @@
-# VoiceShield
+# VaaniRakshak-AI
 
 AI-powered cybersecurity prototype for detecting voice-cloning and synthetic-speech impersonation attacks.
 
@@ -118,7 +118,7 @@ Set `segmentation.short_clip_policy: skip` in YAML if you explicitly want to dro
 ## Repository layout
 
 ```
-voiceshield/
+VaaniRakshak-AI/
 ├── README.md
 ├── .gitignore
 ├── requirements.txt
@@ -128,7 +128,7 @@ voiceshield/
 │   ├── raw/{indicvoices,indicsynth,asvspoof,local}/
 │   ├── processed/{train,dev,test}/
 │   └── manifests/
-├── src/voiceshield/
+├── src/VaaniRakshak-AI/
 │   ├── config.py                     # YAML → typed dataclasses
 │   ├── exceptions.py
 │   └── data/

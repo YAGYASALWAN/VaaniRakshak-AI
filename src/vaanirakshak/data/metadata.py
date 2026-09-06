@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from voiceshield.exceptions import ManifestSchemaError
+from vaanirakshak.exceptions import ManifestSchemaError
 
 logger = logging.getLogger(__name__)
 

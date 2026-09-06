@@ -10,12 +10,12 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from voiceshield.config import AppConfig, load_config, default_config_path
-from voiceshield.data.audio_io import load_audio, save_audio
-from voiceshield.data.metadata import ManifestRecord, append_manifest, make_sample_id
-from voiceshield.data.preprocessing import convert_to_mono, resample_waveform, segment_waveform
-from voiceshield.data.validation import validate_audio_data, validate_waveform
-from voiceshield.exceptions import AudioValidationError
+from vaanirakshak.config import AppConfig, load_config, default_config_path
+from vaanirakshak.data.audio_io import load_audio, save_audio
+from vaanirakshak.data.metadata import ManifestRecord, append_manifest, make_sample_id
+from vaanirakshak.data.preprocessing import convert_to_mono, resample_waveform, segment_waveform
+from vaanirakshak.data.validation import validate_audio_data, validate_waveform
+from vaanirakshak.exceptions import AudioValidationError
 
 logger = logging.getLogger(__name__)
 
