@@ -5,6 +5,7 @@ from pathlib import Path
 import random
 import re
 import shutil
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import Request, build_opener
@@ -130,6 +131,7 @@ class Downloader:
                 if length is None or int(length) != expected:
                     raise ValueError("Shard size differs from pinned repository listing")
                 received = 0
+                started = last_update = time.monotonic()
                 while received < expected:
                     chunk = response.read(min(1024**2, expected - received))
                     if not chunk:
@@ -137,6 +139,13 @@ class Downloader:
                     received += len(chunk)
                     self.bytes_read += len(chunk)
                     output.write(chunk)
+                    now = time.monotonic()
+                    if now - last_update >= 5 or received == expected:
+                        speed = received / max(now - started, 0.001) / 1024**2
+                        print(f"  {received / expected:.1%}: {received / 1024**2:.1f} / "
+                              f"{expected / 1024**2:.1f} MiB ({speed:.2f} MiB/s average)", flush=True)
+                        last_update = now
+            print("  Download complete; verifying checksum...", flush=True)
             digest = file_sha(partial)
             if item["sha256"] and digest != item["sha256"]:
                 raise ValueError("Downloaded shard checksum mismatch")
