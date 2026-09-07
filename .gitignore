@@ -79,3 +79,5 @@ data/manifests/**
 # Generated metadata reports and acquisition exports
 data/reports/
 data/metadata/
+data/baseline/
+data/english_asv2019/
