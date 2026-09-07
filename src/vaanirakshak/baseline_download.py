@@ -1,11 +1,13 @@
 """Pinned original Parquet acquisition with hard payload bounds and no viewer audio."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import random
 import re
 import shutil
 import time
+import tempfile
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import Request, build_opener
@@ -23,9 +25,25 @@ MAX_SHARD = 600 * 1024**2
 def save_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    temp.replace(path)
+    payload = json.dumps(value, indent=2, allow_nan=False) + "\n"
+    # Close and flush our handle before replacement. Unique names avoid stale .tmp locks.
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                     prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
+        temp = Path(stream.name)
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    for attempt in range(8):
+        try:
+            temp.replace(path)
+            return
+        except PermissionError:
+            if attempt == 7:
+                # Never delete the old ledger or fall back to a non-atomic overwrite.
+                raise PermissionError(f"Windows is blocking an update to {path}. "
+                                      "Move the existing cache outside OneDrive and rerun with --data pointing to it. "
+                                      f"The original file and pending update {temp.name} were preserved.") from None
+            time.sleep(min(.1 * 2**attempt, 1.0))
 
 
 def file_sha(path):
