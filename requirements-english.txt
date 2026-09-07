@@ -1,0 +1,4 @@
+# Preserve the installed torch/torchaudio 2.10.0+cu128 pair.
+datasets>=4.5,<5
+soundfile>=0.13,<0.14
+numpy>=2,<3
