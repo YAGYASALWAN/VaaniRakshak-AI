@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VaaniRakshak | Voice analysis</title>
+  <meta name="description" content="Analyze audio for signs of synthetic speech with VaaniRakshak.">
+  <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+  <header><a class="brand" href="/">VaaniRakshak<span>VOICE ANALYSIS</span></a><span class="local">Local workspace</span></header>
+  <main>
+    <div class="intro"><p class="eyebrow">AUDIO DETECTION</p><h1>Voice analysis</h1><p>Check a recording for signs of AI-generated speech.</p></div>
+    <div class="workspace">
+      <section class="panel upload-panel" aria-labelledby="upload-heading">
+        <div class="panel-heading"><span class="step">01</span><h2 id="upload-heading">Choose your recording</h2></div>
+        <div id="dropzone" class="dropzone">
+          <p class="drop-title">Drop an audio file here</p><p>WAV or FLAC · Up to 20 MiB · 1–120 seconds</p>
+          <label class="file-button" for="file">Browse files</label><input id="file" type="file" accept=".wav,.flac,audio/wav,audio/flac">
+        </div>
+        <div id="selected" hidden><div class="file-row"><strong id="filename"></strong><button id="remove" class="text-button" type="button">Remove</button></div><audio id="player" controls></audio></div>
+        <button id="analyze" class="primary" type="button" disabled>Analyze recording</button>
+        <p id="message" class="message" role="status" aria-live="polite">Choose a recording to begin.</p>
+        <p class="privacy">Audio is processed on this computer and is not saved by the app.</p>
+      </section>
+      <aside class="panel context" aria-labelledby="model-heading">
+        <p class="eyebrow">ANALYSIS ENGINE</p><h2 id="model-heading">Model status</h2><p id="model-status">Checking for a trained model…</p><p id="model-name" class="model-name"></p>
+        <button id="refresh" class="text-button" type="button">Refresh status</button>
+        <hr><h3>What is checked</h3><p>The model examines audio patterns associated with synthetic speech. Each result shows the segment that was analyzed.</p>
+        <hr><h3>Measured performance</h3><p id="metrics">No evaluation results loaded.</p><p class="small">Dataset scores describe that experiment. They do not guarantee performance on an unfamiliar voice.</p>
+      </aside>
+    </div>
+    <section id="result" class="panel result" aria-labelledby="result-heading" hidden>
+      <div class="result-top"><div><p class="eyebrow">ANALYSIS RESULT</p><h2 id="result-heading" tabindex="-1"></h2></div><span id="elapsed" class="small"></span></div>
+      <p id="result-copy"></p>
+      <div class="scale-labels"><span>Genuine pattern</span><span>Synthetic pattern</span></div><meter id="score-meter" min="0" max="1" value="0.5" aria-label="Synthetic speech score"></meter>
+      <div class="score-row"><span>Synthetic score <strong id="score"></strong></span><span>Decision threshold <strong id="threshold"></strong></span></div>
+      <p id="scope" class="small"></p><p id="model-notice" class="small"></p><p class="result-note">This score is not a probability or proof of authenticity. Values near the threshold are reported as inconclusive.</p>
+    </section>
+    <footer><span>VaaniRakshak</span><span>Academic research demonstration</span></footer>
+  </main>
+</body>
+</html>
