@@ -1,0 +1,6 @@
+# Keep the working paired CUDA torch/torchaudio installation.
+pyarrow>=18,<26
+soundfile>=0.13,<0.15
+numpy>=2,<3
+huggingface-hub>=0.34,<2
+filelock>=3.16,<4

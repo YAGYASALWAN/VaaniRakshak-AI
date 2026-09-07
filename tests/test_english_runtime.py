@@ -1,6 +1,7 @@
 """Small CPU integration checks; never download benchmark audio."""
 import importlib.util
 import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -84,6 +85,36 @@ class EnglishRuntimeTests(unittest.TestCase):
                 handle.write(bytes([value[0] ^ 1]))
             with self.assertRaisesRegex(ValueError, "checksum"):
                 training.cache_split(root, "train", "cpu", no_network)
+
+    def test_profile_training_and_demo_inference(self):
+        from vaanirakshak.demo_server import Detector
+        counts = {s: {0: 2, 1: 2} for s in ("train", "validation", "test")}
+        rng = np.random.default_rng(7)
+
+        def cache(root, split, device):
+            rows = [dict(id=f"{split}-{i}", speaker=f"{split}-speaker-{i}",
+                         audio_sha256=f"{split}-hash-{i}", label=i % 2) for i in range(4)]
+            return rng.normal(size=(4, 64, 401)).astype(np.float16), rows
+
+        profile = dict(repository="test-fixture", revision="fixture-v1", notice="Test fixture only",
+                       counts=counts, cache_split=cache, run_prefix="fixture_")
+        previous = Path.cwd()
+        with tempfile.TemporaryDirectory() as temp:
+            try:
+                os.chdir(temp)
+                folder = training.run(Path(temp), epochs=1, batch_size=2, device="cpu", profile=profile)
+                self.assertTrue((folder / "evaluation.json").is_file())
+                detector = Detector(folder / "best.pt", "cpu")
+                self.assertTrue(detector.status()["ready"])
+                result = detector.analyze(self.audio(frames=16000))
+                self.assertGreaterEqual(result["synthetic_score"], 0)
+                self.assertLessEqual(result["synthetic_score"], 1)
+                self.assertFalse(result["calibrated_probability"])
+                self.assertEqual(result["notice"], "Test fixture only")
+                with self.assertRaises((ValueError, RuntimeError)):
+                    detector.analyze(b"not audio")
+            finally:
+                os.chdir(previous)
 
 
 if __name__ == "__main__":

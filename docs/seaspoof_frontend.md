@@ -1,5 +1,7 @@
 # SEA-Spoof frontend integration
 
+**Update:** a self-contained English training workflow and matching adapter are now available in [sea30_training.md](sea30_training.md). Use `--adapter vaanirakshak.sea_training:create_detector` for checkpoints made by that workflow. The external/unpublished training implementation discussed below still requires its own adapter.
+
 This change adds a restrained local frontend and an explicit model adapter interface. The user's newer SEA-Spoof training code was not available in the accessible GitHub branches when this was built. It does **not** replace that code, start ASVspoof 5 downloads, claim SEA-Spoof checkpoint compatibility, or claim a measured accuracy improvement.
 
 ## Start the interface

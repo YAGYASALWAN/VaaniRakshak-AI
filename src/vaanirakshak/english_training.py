@@ -203,21 +203,28 @@ def atomic_torch_save(value, path):
     temporary.replace(path)
 
 
-def run(root, epochs=20, batch_size=32, resume=None, device="cuda"):
+def run(root, epochs=20, batch_size=32, resume=None, device="cuda", profile=None):
+    profile = profile or {}
+    repository = profile.get("repository", REPOSITORY)
+    revision = profile.get("revision", REVISION)
+    notice = profile.get("notice", NOTICE)
+    counts = profile.get("counts", COUNTS)
+    load_cache = profile.get("cache_split", cache_split)
+    check_partitions = profile.get("check_disjoint", check_disjoint)
     if device == "cuda" and not torch.cuda.is_available():
         raise ValueError("CUDA unavailable. Run with the clean GPU Python environment.")
     torch.set_num_threads(4)
     torch.manual_seed(42)
     root = Path(root).resolve()
-    print(NOTICE, flush=True)
-    print("Full English training: 25,380 train / 24,844 validation / 71,237 held-out test.", flush=True)
-    train_x, train_rows = cache_split(root, "train", device)
-    dev_x, dev_rows = cache_split(root, "validation", device)
-    check_disjoint({"train": train_rows, "validation": dev_rows})
-    data_identity = hashlib.sha256(json.dumps({"schema": CACHE_VERSION, "repository": REPOSITORY,
-                       "revision": REVISION, "train": train_rows, "validation": dev_rows}, sort_keys=True).encode()).hexdigest()
+    print(notice, flush=True)
+    print("Recordings:", {s: sum(n.values()) for s, n in counts.items()}, flush=True)
+    train_x, train_rows = load_cache(root, "train", device)
+    dev_x, dev_rows = load_cache(root, "validation", device)
+    check_partitions({"train": train_rows, "validation": dev_rows})
+    data_identity = hashlib.sha256(json.dumps({"schema": CACHE_VERSION, "repository": repository,
+                       "revision": revision, "train": train_rows, "validation": dev_rows}, sort_keys=True).encode()).hexdigest()
     run_dir = Path(resume).resolve() if resume else Path("models") / (
-        "english_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
+        profile.get("run_prefix", "english_") + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
     run_dir.mkdir(parents=True, exist_ok=True)
     model = EnglishCNN().to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -245,9 +252,9 @@ def run(root, epochs=20, batch_size=32, resume=None, device="cuda"):
             torch.cuda.set_rng_state_all(state["cuda_rng"])
         history, best, stale = state["history"], state["best"], state["stale"]
         start_epoch = state["epoch"] + 1
-    save_json(run_dir / "run_config.json", {"repository": REPOSITORY, "revision": REVISION,
+    save_json(run_dir / "run_config.json", {"repository": repository, "revision": revision,
               "epochs_requested": epochs, "batch_size": batch_size, "data_identity": data_identity,
-              "data_directory": str(root), "notice": NOTICE, "torch_version": str(torch.__version__),
+              "data_directory": str(root), "notice": notice, "torch_version": str(torch.__version__),
               "sampling": "All training data eligible; class-balanced replacement sampling per epoch"})
     print("Training on", torch.cuda.get_device_name(0) if device == "cuda" else "CPU", flush=True)
     print("Checkpoints:", run_dir, flush=True)
@@ -280,7 +287,7 @@ def run(root, epochs=20, batch_size=32, resume=None, device="cuda"):
             best, stale = dev_loss, 0
             atomic_torch_save({"schema": "english-cnn-v1", "model": model.state_dict(),
                               "epoch": epoch, "threshold": .5, "data_identity": data_identity,
-                              "frontend": CACHE_VERSION, "notice": NOTICE}, run_dir / "best.pt")
+                              "frontend": CACHE_VERSION, "notice": notice}, run_dir / "best.pt")
         else:
             stale += 1
         atomic_torch_save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
@@ -293,14 +300,14 @@ def run(root, epochs=20, batch_size=32, resume=None, device="cuda"):
     if not (run_dir / "best.pt").exists():
         raise ValueError("No trained checkpoint available")
     print("Training finished. Loading held-out test data for final evaluation...", flush=True)
-    test_x, test_rows = cache_split(root, "test", device)
-    check_disjoint({"train": train_rows, "validation": dev_rows, "test": test_rows})
+    test_x, test_rows = load_cache(root, "test", device)
+    check_partitions({"train": train_rows, "validation": dev_rows, "test": test_rows})
     state = torch.load(run_dir / "best.pt", map_location=device, weights_only=True)
     model.load_state_dict(state["model"])
     test_loader = DataLoader(FeatureDataset(test_x, test_rows), batch_size=batch_size, num_workers=0)
     test_loss, labels, scores = evaluate(model, test_loader, device)
-    report = {"status": "english_experiment_complete", "notice": NOTICE, "repository": REPOSITORY,
-              "revision": REVISION, "counts": {s: {str(k): v for k, v in n.items()} for s, n in COUNTS.items()},
+    report = {"status": "english_experiment_complete", "notice": notice, "repository": repository,
+              "revision": revision, "counts": {s: {str(k): v for k, v in n.items()} for s, n in counts.items()},
               "best_epoch": state["epoch"], "checkpoint": str(run_dir / "best.pt"), "test_loss": test_loss,
               "test_metrics": binary_metrics(labels, scores), "threshold_policy": "Fixed 0.5; epoch chosen only by dev loss"}
     save_json(run_dir / "evaluation.json", report)
@@ -323,6 +330,6 @@ def predict(checkpoint, path, device="cuda"):
         features = frontend(torch.from_numpy(wave).unsqueeze(0).to(device)).half().float()
         score = model(features).sigmoid().item()
     result = {"prediction": "synthetic" if score >= state["threshold"] else "bonafide",
-              "synthetic_score": score, "calibrated_probability": False, "window": details, "notice": NOTICE}
+              "synthetic_score": score, "calibrated_probability": False, "window": details, "notice": state["notice"]}
     print(json.dumps(result, indent=2))
     return result
