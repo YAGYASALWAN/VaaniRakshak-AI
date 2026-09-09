@@ -1,0 +1,6 @@
+# Use the existing working CUDA torch + torchaudio environment.
+numpy>=2,<3
+soundfile>=0.13,<0.15
+huggingface-hub>=0.34,<2
+requests>=2.32,<3
+filelock>=3.16,<4

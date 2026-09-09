@@ -1,5 +1,17 @@
 # VaaniRakshak-AI
 
+## Current runnable experiments
+
+The historical milestone notes below predate the CNN and local upload demo.
+The repository now includes ASVspoof English, SEA-Spoof, and an English MLAAD
+feature-cache workflow. Implementation is not evidence of a completed GPU run.
+
+**New: [English MLAAD streaming and offline training](docs/mlaad_streaming.md).**
+Fetch each recording into memory, commit compact log-mel features, then train
+offline with epoch checkpoints. Matching genuine M-AILABS originals are required.
+See the guide for source checks, recovery, disk space, and evaluation limits.
+
+
 AI-powered cybersecurity prototype for detecting voice-cloning and synthetic-speech impersonation attacks.
 
 This repository is being built incrementally for SIH 2026. **This milestone is dataset engineering only.** There is no anti-spoofing model, API, frontend, risk engine, or blockchain layer yet.
