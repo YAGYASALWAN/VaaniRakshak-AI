@@ -1,0 +1,79 @@
+{
+  "created_utc": "2026-09-09T18:31:08.138333+00:00",
+  "positive_class": "synthetic (1)",
+  "negative_class": "genuine (0)",
+  "matrix_axes": "rows=true, columns=predicted; [[TN,FP],[FN,TP]]",
+  "threshold": 0.5,
+  "evidence": "Recomputed from saved per-recording predictions; no new model inference.",
+  "metrics": {
+    "n": 71237,
+    "confusion_matrix": [
+      [
+        7141,
+        214
+      ],
+      [
+        8497,
+        55385
+      ]
+    ],
+    "accuracy": 0.8777180397826972,
+    "precision": 0.9961510099102502,
+    "recall": 0.8669891362199055,
+    "f1": 0.9270930106041965,
+    "specificity": 0.9709041468388852,
+    "false_positive_rate": 0.029095853161114887,
+    "false_negative_rate": 0.13301086378009455,
+    "negative_predictive_value": 0.4566440721319862,
+    "balanced_accuracy": 0.9189466415293953,
+    "mcc": 0.615949639049528,
+    "macro_f1": 0.7741192883230177,
+    "weighted_f1": 0.8955048828790517,
+    "synthetic_prevalence": 0.8967530917921867,
+    "per_class": {
+      "genuine": {
+        "precision": 0.4566440721319862,
+        "recall": 0.9709041468388852,
+        "f1": 0.6211455660418388,
+        "support": 7355
+      },
+      "synthetic": {
+        "precision": 0.9961510099102502,
+        "recall": 0.8669891362199055,
+        "f1": 0.9270930106041965,
+        "support": 63882
+      }
+    },
+    "roc_auc": 0.9789369680600136,
+    "average_precision": 0.9973830147926075,
+    "brier_score": 0.09992474165038472,
+    "log_loss": 0.4588499699553412,
+    "ece_10_bins": 0.12286567292593675
+  },
+  "source_context": {
+    "repository": "Bisher/ASVspoof_2019_LA",
+    "revision": "aea92dd83a9c56e070c0b1e9f02e7c0d96216a4c",
+    "checkpoint": "models\\english_20260907T044807696536Z\\best.pt",
+    "best_epoch": 13,
+    "notice": "English ASVspoof 2019 LA experiment using a third-party mirror. The official partitions are preserved. One centre four-second window is scored per recording. Results do not establish performance on modern Qwen3 voices, telephone calls, or other languages."
+  },
+  "limitations": [
+    "These results apply to the recorded test set, not guaranteed real-world accuracy.",
+    "Synthetic scores are not established as calibrated probabilities.",
+    "The inconclusive UI band is not applied here: metrics use the binary threshold.",
+    "Undefined metrics are null; no test-set threshold or temperature fitting is performed."
+  ],
+  "inputs": {
+    "evaluation.json": "3cb2fef0e8046bb1f424df15faff7d5ceaeb76c4b29c5273dcb04df7237e15fe",
+    "test_predictions.json": "9aa053215f76f1e2b4aafb47e9eb4b93fcdd22ccf0e8d7e689eb2dd482541317",
+    "history.json": "a38bf426a532c9bde1d628e0d79d1e3f6fb22bb627537966426806e917908b84"
+  },
+  "missing_inputs": [],
+  "charts": [
+    "confusion_heatmap.png",
+    "metric_summary.png",
+    "roc_precision_recall.png",
+    "scores_calibration.png",
+    "training_history.png"
+  ]
+}
