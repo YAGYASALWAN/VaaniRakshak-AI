@@ -1,9 +1,24 @@
+# Core numerical and data-processing dependencies.
 numpy
 pandas
-torch
-torchaudio
-soundfile
 scipy
 pyyaml
 tqdm
+
+# Deep-learning and audio stack.
+# IMPORTANT: for GPU training, install a CUDA-enabled PyTorch/TorchAudio build first;
+# a default PyPI install can resolve to a CPU-only build on Windows.
+torch
+torchaudio
+soundfile
+
+# MLAAD / Hugging Face data access.
+# huggingface_hub resolves pinned MLAAD dataset URLs and reads the saved HF login token.
+huggingface_hub
+# requests is used by the MLAAD Network client for streamed HTTPS metadata/audio downloads.
+requests
+# filelock prevents multiple prepare/train processes from writing to the same feature cache.
+filelock
+
+# Development / test dependency.
 pytest
