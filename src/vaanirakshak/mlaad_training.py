@@ -95,7 +95,8 @@ def prepare(root, revision, device, audio_root=None):
             try:
                 features, properties = transform(raw)
             except Exception as error:
-                raise ValueError(f"Could not prepare {row['path']}; completed recordings preserved") from error
+                print(f"[SKIPPED] {row['path']} | Reason: {error}")
+                continue
             cache.put(dict(row, **properties), features)
             if index % 25 == 0 or index == len(source_plan['rows']):
                 print(f"Synthetic features: {index:,}/{len(source_plan['rows']):,} committed", flush=True)
