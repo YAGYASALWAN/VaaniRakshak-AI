@@ -79,6 +79,7 @@ def prepare(root, revision, device, audio_root=None):
         # Obtain the genuine side first so broken source links cannot strand a
         # complete fake-only 45 GB acquisition. Full metadata checks precede both.
         prepare_real(root, source_plan, cache, network, transform)
+        skipped_ids = set()
         for index, row in enumerate(source_plan['rows'], 1):
             if cache.has(row['id']):
                 continue
@@ -96,12 +97,16 @@ def prepare(root, revision, device, audio_root=None):
                 features, properties = transform(raw)
             except Exception as error:
                 print(f"[SKIPPED] {row['path']} | Reason: {error}")
+                skipped_ids.add(row['id'])
                 continue
             cache.put(dict(row, **properties), features)
             if index % 25 == 0 or index == len(source_plan['rows']):
                 print(f"Synthetic features: {index:,}/{len(source_plan['rows']):,} committed", flush=True)
         rows = cache.rows()
-        expected = {r['id'] for r in source_plan['rows']} | {'mailabs:' + p for p in source_plan['originals']}
+        expected = (
+    ({r['id'] for r in source_plan['rows']} - skipped_ids)
+    | {'mailabs:' + p for p in source_plan['originals']}
+)
         if {r['id'] for r in rows} != expected:
             raise ValueError('Feature coverage differs from full source plan')
         cache.verify()
