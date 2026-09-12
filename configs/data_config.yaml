@@ -56,11 +56,25 @@ datasets:
     default_label: spoof
     raw_subdir: indicsynth
   asvspoof:
-    # Held-out generalization benchmark. Do not train or tune on it.
+    # ASVspoof 2021 DF. Held-out generalization benchmark for the manifest
+    # pipeline: do not train or tune on it. This entry does NOT cover ASVspoof
+    # 2019 LA, which is a training corpus here - see the entry below. Keeping the
+    # two apart matters, because a blanket "never train on ASVspoof" here would
+    # contradict the checkpoint in records/performance/.
     role: external_benchmark
     default_label: null
     raw_subdir: asvspoof
     use_for_training: false
+    use_for_hyperparameter_tuning: false
+  asvspoof2019_la:
+    # The corpus the current English CNN was trained on, via
+    # src/vaanirakshak/english_training.py using the official LA partitions from a
+    # third-party Hugging Face mirror. Not part of the local manifest pipeline;
+    # recorded here so the stated policy matches what was actually done.
+    role: train_dev
+    default_label: null
+    raw_subdir: asvspoof2019_la
+    use_for_training: true
     use_for_hyperparameter_tuning: false
   local:
     role: smoke_test

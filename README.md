@@ -1,20 +1,27 @@
 # VaaniRakshak-AI
 
-## Current runnable experiments
+AI-powered cybersecurity prototype for detecting voice-cloning and synthetic-speech impersonation attacks. Built incrementally for SIH 2026.
 
-The historical milestone notes below predate the CNN and local upload demo.
-The repository now includes ASVspoof English, SEA-Spoof, and an English MLAAD
-feature-cache workflow. Implementation is not evidence of a completed GPU run.
+## Status
 
-**New: [English MLAAD streaming and offline training](docs/mlaad_streaming.md).**
-Fetch each recording into memory, commit compact log-mel features, then train
-offline with epoch checkpoints. Matching genuine M-AILABS originals are required.
-See the guide for source checks, recovery, disk space, and evaluation limits.
+**What exists and has been measured.** A CNN speech-authenticity detector trained on ASVspoof 2019 LA, a local upload demo that scores a file against it, and a reporting harness that recomputes metrics from saved per-recording predictions.
 
+On the official ASVspoof 2019 LA evaluation partition (71,237 recordings, one centre four-second window each, threshold 0.5):
 
-AI-powered cybersecurity prototype for detecting voice-cloning and synthetic-speech impersonation attacks.
+| | Predicted genuine | Predicted synthetic |
+|---|---:|---:|
+| **Actually bona fide** (7,355) | 7,141 | 214 |
+| **Actually spoof** (63,882) | **8,497** | 55,385 |
 
-This repository is being built incrementally for SIH 2026. **This milestone is dataset engineering only.** There is no anti-spoofing model, API, frontend, risk engine, or blockchain layer yet.
+Accuracy 87.77%, ROC-AUC 0.9789. Read the second row first: **13.3% of spoofs are passed through as genuine**, while only 2.9% of real speech is wrongly flagged. The model under-detects clones, which for a fraud-prevention product is the worse of the two failure modes. Scores are also poorly calibrated (ECE 0.123) and are not probabilities. Full record in `records/performance/`.
+
+These numbers are English, lab-benchmark numbers. They do not establish performance on telephone-channel audio, on modern zero-shot voice cloning, or on any Indian language.
+
+**What exists as code but has not been run to completion.** SEA-Spoof English training under a 30 GB transfer budget, English MLAAD feature caching and offline training, a frozen cross-corpus evaluator, and a recording-level model that scores every window of a recording. Implementation is not evidence of a completed GPU run.
+
+**What does not exist yet.** No streaming/live ingestion, no speech-to-text, no conversation-intent detection, no risk engine, no live warning or verification workflow, no per-call report, and no Indian-language checkpoint. The dataset adapters and bias-audit tooling for IndicVoices-R and IndicSynth are built; nothing has been trained on them.
+
+**Guides.** [English MLAAD streaming and offline training](docs/mlaad_streaming.md) — fetch each recording into memory, commit compact log-mel features, then train offline with epoch checkpoints. Matching genuine M-AILABS originals are required. See the guide for source checks, recovery, disk space, and evaluation limits.
 
 ## Problem
 
@@ -28,46 +35,56 @@ Voice-cloning attacks can impersonate trusted people and manipulate victims into
 
 Indian languages and mixed recording conditions are first-class requirements, not an afterthought.
 
-## Current milestone
+## The local dataset pipeline
 
-**Milestone 2: Dataset Inspection, Sampling and Bias Audit (implementation; full-suite verification pending).**
-
-**NEURAL NETWORK TRAINING NOT STARTED.**
-
-You can:
+Separate from the streamed-corpus training above, the repository carries a local
+manifest pipeline for building Indian-language training data. With it you can:
 
 - Keep raw datasets immutable.
 - Load and validate local audio.
-- Convert any file to mono 16 kHz WAV windows (~4 s).
+- Convert any file to mono 16 kHz WAV windows (~4 s, 2 s hop).
 - Write a unified manifest (`bonafide` / `spoof`).
-- Split later by **speaker** and by **generator**, not by random rows.
+- Split by **speaker** and by **generator**, not by random rows.
+- Audit for dataset/class confounding before training anything on it.
 
-You cannot yet train a detector. That is intentional.
+No Indian-language model has been trained from it yet. That is the gap, not a
+design choice.
 
-## Planned architecture
+## Architecture
 
 ```
 Audio
-  → preprocessing (this milestone)
-  → anti-spoofing model          [not implemented]
-  → temporal risk engine         [not implemented]
-  → cybersecurity decision       [not implemented]
-  → warning / step-up auth       [not implemented]
+  → preprocessing                          [built]
+  → anti-spoofing model                    [built: English, lab benchmark only]
+  → streaming / rolling window scoring     [partial: recording-level model scores
+                                            every window; no live ingestion]
+  → speech-to-text                         [not implemented]
+  → risky-intent detection                 [not implemented]
+  → temporal risk engine                   [not implemented]
+  → live warning / step-up verification    [not implemented]
+  → per-call report                        [not implemented]
 ```
 
-Future milestones (not in this repo yet): AASIST-style baseline, speaker verification, FastAPI + WebSockets, privacy-preserving logs, tamper-evident audit records, multilingual Indian evaluation.
+Not in this repository yet: AASIST-style baseline, speaker verification, FastAPI + WebSockets, privacy-preserving logs, tamper-evident audit records, multilingual Indian evaluation.
 
 ## Dataset strategy
 
 | Dataset | Role | Canonical label | Training use |
 | --- | --- | --- | --- |
-| [IndicVoices-R](https://huggingface.co/datasets/ai4bharat/indicvoices_r) | Genuine Indian speech | `bonafide` | Train / development |
-| [IndicSynth](https://aikosh.indiaai.gov.in/home/datasets/details/indicsynth.html) | Synthetic / converted Indian speech | `spoof` | Train / development |
-| [ASVspoof 2021 DF](https://huggingface.co/datasets/SpeechAntiSpoofingBenchmarks/ASVspoof2021_DF) | External benchmark | as published, mapped to `bonafide`/`spoof` later | **Never for initial training or tuning** |
+| [IndicVoices-R](https://huggingface.co/datasets/ai4bharat/indicvoices_r) | Genuine Indian speech | `bonafide` | Train / development (not yet used) |
+| [IndicSynth](https://aikosh.indiaai.gov.in/home/datasets/details/indicsynth.html) | Synthetic / converted Indian speech | `spoof` | Train / development (not yet used) |
+| [ASVspoof 2019 LA](https://huggingface.co/datasets/Bisher/ASVspoof_2019_LA) | English training corpus | as published | **Trained on.** Official partitions, speaker-disjoint |
+| [ASVspoof 2021 DF](https://huggingface.co/datasets/SpeechAntiSpoofingBenchmarks/ASVspoof2021_DF) | External benchmark | as published, mapped to `bonafide`/`spoof` later | **Never for training or tuning** |
 
-ASVspoof 2021 DF is held out so that hyperparameter choices cannot overfit a well-known English deepfake benchmark. If the model only works on ASVspoof, it has not solved the Indian-speech problem. If it works on IndicVoices-R + IndicSynth **and** still generalises to ASVspoof, that is evidence of a speech-authenticity detector rather than a dataset detector.
+The two ASVspoof entries are deliberately separate, in this table and in
+`configs/data_config.yaml`. The current English checkpoint **was** trained on the
+2019 LA train partition; 2021 DF is the corpus held out so that hyperparameter
+choices cannot overfit a well-known English deepfake benchmark. Stating a blanket
+"never train on ASVspoof" would contradict the checkpoint in `records/performance/`.
 
-**Do not download the corpora yet.** Directories under `data/raw/` are placeholders. Work with locally supplied WAV files until a sampling strategy exists.
+If the model only works on ASVspoof, it has not solved the Indian-speech problem. If it works on IndicVoices-R + IndicSynth **and** still generalises to an unseen benchmark, that is evidence of a speech-authenticity detector rather than a dataset detector. `scripts/evaluate_frozen_asvspoof.py` runs that test in one direction without touching any weights.
+
+**The Indian corpora are not downloaded.** Directories under `data/raw/` are placeholders for them; work with locally supplied WAV files until a sampling strategy exists. The English corpora used for training are streamed, not stored under `data/raw/`.
 
 ## Engineering principles
 
@@ -220,11 +237,11 @@ A 5 s clip with a 4 s window and 2 s hop yields two windows: `0–4 s` (full) an
 - Missing `speaker_id` is **not** treated as one global speaker; splits fall back to `source_file` so overlapping windows of the same file stay in one split.
 - `--split train` on a single smoke-test file is **not** a speaker-disjoint dataset split. Use `speaker_disjoint_split` on a full manifest later.
 - Peak normalization is off. Clipping on write is logged.
-- ASVspoof may be ingested later into the same schema but `use_for_training: false` in config.
+- ASVspoof 2021 DF may be ingested later into the same schema but stays `use_for_training: false` in config. ASVspoof 2019 LA is a separate entry and is trained on.
 
 ## Dataset Inspection, Sampling and Bias Audit
 
-**NEURAL NETWORK TRAINING NOT STARTED.** No dataset downloads occur in these tools.
+**These tools train nothing and download nothing.** They inspect, sample and audit metadata only.
 The default sampling config uses tiny synthetic metadata fixtures, clearly named
 `demo_generator_a` and `demo_generator_b`. Results from those fixtures describe
 the software's behavior, never the actual corpora.
