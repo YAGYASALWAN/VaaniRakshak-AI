@@ -40,6 +40,31 @@ class EnglishRuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             training.waveform_window(self.audio(rate=8000))
 
+    def test_shared_scoring_path_flags_unscorable_audio(self):
+        frontend, model = training.Frontend().eval(), training.EnglishCNN().eval()
+        waves = torch.from_numpy(np.stack([training.waveform_window(self.audio(i))[0] for i in range(3)]))
+        scores, usable = training.score_features(frontend, model, waves)
+        self.assertEqual(len(scores), 3)
+        self.assertTrue(all(usable))
+        self.assertTrue(all(0 <= s <= 1 for s in scores))
+
+        # A single unscorable recording must not take the rest of the batch with it.
+        broken = waves.clone()
+        broken[1] = float("nan")
+        scores, usable = training.score_features(frontend, model, broken)
+        self.assertEqual(usable, [True, False, True])
+        self.assertTrue(np.isfinite(scores[0]) and np.isfinite(scores[2]))
+
+    def test_scoring_path_is_deterministic_and_batch_independent(self):
+        # The demo, predict() and the frozen evaluator all route through this
+        # function, so the same recording must score identically in any batch.
+        frontend, model = training.Frontend().eval(), training.EnglishCNN().eval()
+        waves = torch.from_numpy(np.stack([training.waveform_window(self.audio(i))[0] for i in range(4)]))
+        batched, _ = training.score_features(frontend, model, waves)
+        for index in range(4):
+            alone, _ = training.score_features(frontend, model, waves[index:index + 1])
+            self.assertAlmostEqual(alone[0], batched[index], places=6)
+
     def test_cache_interrupt_resume_and_offline_reuse(self):
         records = [dict(key=i % 2, audio_file_name=f"LA_T_{i:07d}", speaker_id="LA_0001",
                         system_id="-" if i % 2 == 0 else "A01", audio={"bytes": self.audio(i)})

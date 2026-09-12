@@ -39,7 +39,7 @@ class Detector:
         import soundfile as sf
         import torch
         import torchaudio
-        from vaanirakshak.english_training import CACHE_VERSION, Frontend, EnglishCNN
+        from vaanirakshak.english_training import CACHE_VERSION, Frontend, EnglishCNN, score_features
 
         signature = (str(path.resolve()), path.stat().st_mtime_ns)
         if signature != self.loaded:
@@ -70,10 +70,10 @@ class Detector:
         if rate != 16000:
             wave = torchaudio.functional.resample(wave, rate, 16000)
         wave = torch.nn.functional.pad(wave[:64000], (0, max(0, 64000 - len(wave))))
-        with torch.no_grad():
-            features = self.frontend(wave.unsqueeze(0).to(self.device)).half().float()
-            score = self.model(features).sigmoid().item()
-        if not np.isfinite(score):
+        # Shared with predict() and the frozen evaluator, so the number shown here is
+        # the same number those report for the same recording.
+        (score,), (usable,) = score_features(self.frontend, self.model, wave.unsqueeze(0).to(self.device))
+        if not usable or not np.isfinite(score):
             raise ValueError("Model returned an invalid score")
         uncertain = abs(score - self.threshold) < .1
         verdict = "Inconclusive" if uncertain else ("Likely synthetic" if score >= self.threshold else "Likely genuine")

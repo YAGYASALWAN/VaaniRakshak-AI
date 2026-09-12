@@ -68,6 +68,28 @@ class EnglishCNN(nn.Module):
         return self.network(features.unsqueeze(1)).squeeze(1)
 
 
+def score_features(frontend, model, waves):
+    """Score a batch of four-second waveforms. The one feature-to-score path here.
+
+    Returns ``(scores, usable)``, both lists of length ``len(waves)``. ``usable`` is
+    False wherever the frontend or the model produced a non-finite value, which
+    happens on out-of-domain audio; callers decide whether that is fatal.
+
+    Precision: the feature cache is stored as float16, so the model was fitted on
+    float16-rounded features and inference rounds the same way. The forward pass
+    itself stays in float32. Autocast is what can overflow on unfamiliar audio, not
+    this cast - normalized log-mel sits near +/-5 and float16 reaches 65504 - so the
+    two concerns are separate and both are handled here.
+    """
+    with torch.no_grad():
+        features = frontend(waves.float()).half().float()
+        finite_features = torch.isfinite(features).flatten(1).all(1)
+        logits = model(torch.nan_to_num(features)).float()
+        usable = finite_features & torch.isfinite(logits)
+        scores = logits.sigmoid()
+    return scores.cpu().tolist(), usable.cpu().tolist()
+
+
 def stream_split(split):
     from datasets import Audio, load_dataset
     stream = load_dataset(REPOSITORY, "default", split=split, revision=REVISION,
@@ -326,9 +348,9 @@ def predict(checkpoint, path, device="cuda"):
     wave, details = waveform_window(Path(path).read_bytes())
     frontend, model = Frontend().to(device).eval(), EnglishCNN().to(device).eval()
     model.load_state_dict(state["model"])
-    with torch.no_grad():
-        features = frontend(torch.from_numpy(wave).unsqueeze(0).to(device)).half().float()
-        score = model(features).sigmoid().item()
+    (score,), (usable,) = score_features(frontend, model, torch.from_numpy(wave).unsqueeze(0).to(device))
+    if not usable:
+        raise ValueError("Model returned an invalid score for this recording")
     result = {"prediction": "synthetic" if score >= state["threshold"] else "bonafide",
               "synthetic_score": score, "calibrated_probability": False, "window": details, "notice": state["notice"]}
     print(json.dumps(result, indent=2))
