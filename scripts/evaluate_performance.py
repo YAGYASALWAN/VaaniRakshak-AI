@@ -12,11 +12,17 @@ import json
 import math
 from pathlib import Path
 
+import sys
+
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from sklearn import metrics as sk
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from vaanirakshak.baseline_rules import equal_error_rate, min_detection_cost
 
 
 def read_json(path):
@@ -99,7 +105,14 @@ def record(evaluation, predictions=None):
         fpr,tpr,roc_thresholds = sk.roc_curve(y,scores,drop_intermediate=False)
         precision,recall,pr_thresholds = sk.precision_recall_curve(y,scores)
         calibration = reliability(y,scores)
-        result.update({'roc_auc':float(sk.roc_auc_score(y,scores)),
+        # Threshold-independent operating-point metrics, so this run can be compared
+        # against published anti-spoofing results that never use our 0.5 threshold.
+        eer, eer_threshold = equal_error_rate(y.tolist(), scores.tolist())
+        min_dcf, dcf_threshold, dcf_settings = min_detection_cost(y.tolist(), scores.tolist())
+        result.update({'eer':float(eer), 'eer_threshold':eer_threshold,
+                       'min_dcf':float(min_dcf), 'min_dcf_threshold':dcf_threshold,
+                       'dcf_parameters':dcf_settings,
+                       'roc_auc':float(sk.roc_auc_score(y,scores)),
                        'average_precision':float(sk.average_precision_score(y,scores)),
                        'brier_score':float(sk.brier_score_loss(y,scores)),
                        'log_loss':float(sk.log_loss(y,scores,labels=[0,1])),

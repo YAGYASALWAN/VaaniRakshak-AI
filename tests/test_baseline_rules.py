@@ -1,13 +1,15 @@
 import io
 import json
 from pathlib import Path
+import random
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 from vaanirakshak.baseline_download import Downloader, MAX_DOWNLOAD, make_plan
-from vaanirakshak.baseline_rules import (assigned_split, balanced_sample, binary_metrics,
+from vaanirakshak.baseline_rules import (DCF_PARAMETERS, assigned_split, balanced_sample, binary_metrics,
+                                       detection_curve, equal_error_rate, min_detection_cost,
                                        references, remove_reference_conflicts, speaker_keys, validate_rows)
 
 
@@ -83,6 +85,54 @@ class BaselineRulesTests(unittest.TestCase):
     def test_one_class_metric_rejected(self):
         with self.assertRaises(ValueError):
             binary_metrics([1, 1], [0.2, 0.9])
+
+    def test_detection_curve_is_monotone_and_ends_open(self):
+        points = detection_curve([0, 0, 1, 1], [0.1, 0.6, 0.4, 0.9])
+        self.assertEqual((points[0][1], points[0][2]), (1.0, 0.0))
+        self.assertEqual((points[-1][1], points[-1][2]), (0.0, 1.0))
+        # No finite threshold rejects a recording that scored the maximum.
+        self.assertIsNone(points[-1][0])
+        for (_, fa1, miss1), (_, fa2, miss2) in zip(points, points[1:]):
+            self.assertLessEqual(fa2, fa1)
+            self.assertGreaterEqual(miss2, miss1)
+
+    def test_equal_error_rate_known_cases(self):
+        separable = ([0, 0, 0, 0, 1, 1, 1, 1], [.1, .2, .3, .4, .6, .7, .8, .9])
+        rate, threshold = equal_error_rate(*separable)
+        self.assertEqual(rate, 0.0)
+        # The reported threshold is the one where the two error rates actually meet.
+        self.assertEqual(threshold, 0.6)
+        self.assertEqual(equal_error_rate([0, 1], [0.5, 0.5])[0], 0.5)
+        self.assertEqual(equal_error_rate([0, 1], [0.9, 0.1])[0], 1.0)
+        # EER is symmetric: relabelling which class is positive cannot change it.
+        labels, scores = separable
+        flipped = [1 - y for y in labels], [1 - p for p in scores]
+        self.assertAlmostEqual(equal_error_rate(*flipped)[0], rate)
+
+    def test_equal_error_rate_matches_theory_for_separated_gaussians(self):
+        # Two unit-variance Gaussians 2 SD apart have EER = 1 - Phi(1) = 0.1587.
+        rng = random.Random(7)
+        labels = [0] * 4000 + [1] * 4000
+        scores = ([min(1, max(0, rng.gauss(.3, .1))) for _ in range(4000)]
+                  + [min(1, max(0, rng.gauss(.5, .1))) for _ in range(4000)])
+        self.assertAlmostEqual(equal_error_rate(labels, scores)[0], 0.1587, delta=0.015)
+
+    def test_min_detection_cost_bounds(self):
+        perfect = min_detection_cost([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9])
+        self.assertEqual(perfect[0], 0.0)
+        # A detector that cannot separate the classes never beats the trivial system.
+        useless, threshold, settings = min_detection_cost([0, 1], [0.5, 0.5])
+        self.assertEqual(useless, 1.0)
+        self.assertIsNone(threshold)
+        self.assertEqual(settings, DCF_PARAMETERS)
+        with self.assertRaises(ValueError):
+            min_detection_cost([0, 1], [0.1, 0.9], {"p_spoof": 0})
+
+    def test_metrics_report_is_json_serialisable_without_nan(self):
+        report = binary_metrics([0, 0, 1, 1], [0.1, 0.6, 0.4, 0.9])
+        self.assertEqual(set(report) >= {"eer", "eer_threshold", "min_dcf",
+                                         "min_dcf_threshold", "dcf_parameters"}, True)
+        json.dumps(report, allow_nan=False)
 
     def test_token_stripped_on_cdn_redirect(self):
         client = Downloader("hf_fake_test_token")

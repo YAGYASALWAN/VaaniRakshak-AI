@@ -38,6 +38,17 @@ class PerformanceTests(unittest.TestCase):
         r,c=report.record({'confusion_matrix':[[5,1],[2,4]],'roc_auc':.8})
         self.assertIsNone(c)
         self.assertNotIn('brier_score',r['metrics'])
+        # EER needs per-recording scores; a counts-only record must not claim one.
+        self.assertNotIn('eer',r['metrics'])
+
+    def test_threshold_independent_metrics_recorded_from_predictions(self):
+        rows=[{'id':str(i),'label':0,'synthetic_score':.1+i/100} for i in range(20)]
+        rows+=[{'id':str(100+i),'label':1,'synthetic_score':.6+i/100} for i in range(20)]
+        r,_=report.record({'test_metrics':{'threshold':.5}},rows)
+        self.assertEqual(r['metrics']['eer'],0.)
+        self.assertEqual(r['metrics']['min_dcf'],0.)
+        self.assertIn('p_spoof',r['metrics']['dcf_parameters'])
+        json.dumps(r,allow_nan=False)
 
     def test_full_report_and_no_overwrite(self):
         with tempfile.TemporaryDirectory() as d:
