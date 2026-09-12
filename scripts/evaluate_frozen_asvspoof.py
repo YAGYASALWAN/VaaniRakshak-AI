@@ -63,12 +63,25 @@ def main():
         if not pending_waves:
             return
         waves = torch.from_numpy(np.stack(pending_waves)).to(args.device)
-        with torch.no_grad(), torch.autocast(device_type=args.device, enabled=args.device == "cuda"):
-            features = frontend(waves)
-            batch_scores = model(features).sigmoid().float().cpu().tolist()
+        # Deliberately evaluate in float32. External-corpus feature distributions can
+        # be more extreme than the training corpus, and AMP/float16 can overflow even
+        # when the same model is numerically stable in-domain.
+        with torch.no_grad():
+            features = frontend(waves).float()
+            if not torch.isfinite(features).all():
+                bad = [meta[2] for meta, ok in zip(pending_meta, torch.isfinite(features).flatten(1).all(1).tolist()) if not ok]
+                raise ValueError(f"Non-finite frontend features for recordings: {bad[:10]}")
+            logits = model(features).float()
+            if not torch.isfinite(logits).all():
+                bad = [meta[2] for meta, ok in zip(pending_meta, torch.isfinite(logits).tolist()) if not ok]
+                raise ValueError(f"Non-finite model logits for recordings: {bad[:10]}")
+            batch_scores = logits.sigmoid().cpu().tolist()
         for (label, attack, recording_id), score in zip(pending_meta, batch_scores):
+            score = float(score)
+            if not np.isfinite(score) or not 0.0 <= score <= 1.0:
+                raise ValueError(f"Invalid model score for {recording_id}: {score!r}")
             labels.append(label)
-            scores.append(float(score))
+            scores.append(score)
             attacks.append(attack)
             ids.append(recording_id)
         pending_waves.clear()
@@ -77,6 +90,7 @@ def main():
     print(f"Frozen checkpoint: {args.checkpoint}", flush=True)
     print(f"External corpus: ASVspoof 2019 LA / {args.split}", flush=True)
     print("NO TRAINING: checkpoint weights will not be modified.", flush=True)
+    print("Numerics: float32 inference for robust cross-corpus evaluation.", flush=True)
 
     for source in stream_split(args.split):
         label = source.get("key")
