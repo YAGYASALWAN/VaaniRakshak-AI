@@ -13,7 +13,8 @@ VaaniRakshak is being developed for SIH 2026 as a system that can analyse speech
 | **Version 1 anti-spoofing baseline** | **Concluded / frozen** | Working CNN baseline and evaluation pipeline, but not accepted as deployment-ready because generalization was not proven strongly enough. |
 | Dataset inspection and bias audit | Active engineering direction | Audit corpus/class confounding, speaker balance, generator balance, codec, duration, language and other shortcut risks before training again. |
 | Source verification / acquisition planning | In progress | Verify real dataset schemas, provenance and acquisition constraints before selecting large audio subsets. |
-| **Version 2 detector** | **Not trained yet** | V2 begins only after the data and evaluation protocol is strong enough to avoid the main V1 failure modes. |
+| **Version 2 — Milestone 0** | **Next** | Freeze the V2 data/evaluation contract before training another detector. |
+| **Version 2 detector training** | **Blocked until Milestone 0 passes** | No V2 model training until provenance, split rules, holdouts, metrics and acceptance gates are defined. |
 
 > **Version 1 is not presented as production-ready.** Its strongest contribution is the engineering and experimental evidence that shaped the V2 design.
 
@@ -531,6 +532,278 @@ The current engineering principles are:
 14. **No deployment claim until unseen-generator and realistic-channel tests pass.**
 
 The current dataset tooling exists specifically because V1 showed that **data provenance is part of the model architecture** in an anti-spoofing system.
+
+---
+
+# Version 2 execution roadmap
+
+Version 2 is deliberately **evaluation-first and data-first**. We will not begin by choosing a larger neural network. We will first define what evidence a model must survive before we trust it.
+
+## Milestone 0 — freeze the V2 evaluation contract
+
+**Status: NEXT. No V2 training before this gate passes.**
+
+Before another gradient update, we will define and commit:
+
+- candidate training corpora and their exact roles,
+- bona fide and spoof provenance requirements,
+- speaker identity rules,
+- generator identity rules,
+- source/corpus identity rules,
+- immutable external holdouts,
+- allowed development datasets,
+- forbidden test-set uses,
+- split construction rules,
+- attack-family stratification rules,
+- primary and secondary metrics,
+- minimum reporting requirements,
+- model acceptance / rejection gates.
+
+The intended evidence hierarchy is:
+
+```text
+in-domain holdout
+        -> speaker-disjoint holdout
+        -> generator-disjoint holdout
+        -> attack-family breakdown
+        -> cross-corpus holdout
+        -> external benchmark
+        -> codec / channel stress tests
+        -> realistic phone / VoIP tests
+        -> multilingual tests
+        -> modern unseen generators
+```
+
+The test sets must not be used to choose architecture, preprocessing, augmentation, threshold or hyperparameters.
+
+### Milestone 0 deliverable
+
+A written V2 evaluation contract that answers, before training:
+
+> **What exact result would convince us that V2 has learned synthetic-speech evidence rather than another shortcut?**
+
+If that question cannot be answered from the protocol, training does not start.
+
+## Milestone 1 — provenance inventory and shortcut audit
+
+We will construct a canonical sample inventory containing, where available:
+
+```text
+sample_id
+dataset
+label
+speaker_id
+generator
+attack_family
+language
+codec
+container
+sample_rate
+channels
+duration
+source_recording
+source_revision
+recording_condition
+```
+
+Before training, we will audit whether the target label can be predicted from nuisance variables such as dataset, codec, language, duration or recording condition.
+
+A particularly important diagnostic will be a **dataset-identity leakage baseline**. If a tiny classifier can distinguish the genuine corpus from the synthetic corpus almost perfectly, that is direct evidence that the authenticity detector has an easy shortcut available.
+
+We will therefore ask not only:
+
+```text
+Can features predict genuine vs synthetic?
+```
+
+but also:
+
+```text
+Can the same features predict dataset?
+Can they predict codec?
+Can they predict generator?
+Can they predict language?
+Can they predict speaker/source group?
+```
+
+These are diagnostic experiments, not product models.
+
+## Milestone 2 — construct hard train/dev/test boundaries
+
+The V2 split must prevent related examples from leaking across evaluation boundaries.
+
+Required controls:
+
+- speaker-disjoint partitions where identity is known,
+- generator-disjoint evaluation,
+- grouping of synthetic variants derived from the same source recording,
+- duplicate / near-duplicate checks where practical,
+- attack-family-aware sampling,
+- no random-row fallback when grouping constraints fail,
+- locked external corpora that are never used for tuning.
+
+The most important V2 experiment will intentionally hold out entire synthesis systems:
+
+```text
+TRAIN
+Generator A
+Generator B
+Generator C
+Generator D
+...
+
+TEST ONLY
+Generator X
+Generator Y
+Generator Z
+```
+
+A detector that survives this test provides much stronger evidence than one evaluated only on generators it saw during training.
+
+## Milestone 3 — V2 Baseline-0: deliberately keep the first model simple
+
+The first V2 detector should remain intentionally modest: a reproducible log-mel + compact CNN baseline close enough to V1 that we can isolate the effect of **better experimental design**.
+
+This baseline answers:
+
+> Does fixing provenance, splitting and evaluation improve generalization even before we introduce a more sophisticated architecture?
+
+That gives us a meaningful comparison:
+
+```text
+V1-style CNN + weak experimental boundaries
+                vs
+similar-capacity CNN + rigorous V2 boundaries
+```
+
+If the V2 baseline still shows near-perfect development performance but collapses on generator-disjoint or cross-corpus tests, we stop and inspect the data again. We do **not** hide the failure by immediately scaling the model.
+
+## Milestone 4 — representation / architecture upgrade
+
+Only after Baseline-0 survives the data and evaluation gates will we evaluate stronger anti-spoofing architectures.
+
+Candidates may include an **AASIST-style baseline**, raw-waveform approaches or pretrained speech representations, but architecture selection comes **after** the protocol is trustworthy.
+
+Every candidate must be compared on the same locked splits and external holdouts.
+
+A bigger architecture is accepted only if it improves generalization, not merely in-domain accuracy.
+
+## Milestone 5 — channel and communication stress testing
+
+VaaniRakshak will eventually receive call audio, not pristine benchmark WAVs.
+
+V2 therefore needs controlled stress tests involving conditions such as:
+
+- resampling,
+- telephone bandwidth limitation,
+- common audio codecs,
+- VoIP-style compression,
+- moderate background noise,
+- clipping,
+- reverberation,
+- microphone variation,
+- packet-loss-like degradation where simulation is defensible.
+
+We will compare the same underlying speech before and after transformation so that we can measure prediction stability rather than simply mixing another uncontrolled corpus into the test.
+
+## Milestone 6 — calibration and call-level decision layer
+
+The anti-spoofing network will produce **evidence**, not the final cybersecurity verdict.
+
+The intended architecture is:
+
+```text
+call
+  -> short overlapping windows
+  -> anti-spoofing scores
+  -> quality / validity checks
+  -> temporal aggregation
+  -> uncertainty handling
+  -> call-level risk state
+  -> likely genuine / inconclusive / likely synthetic
+  -> warning or step-up verification
+```
+
+We will explicitly separate:
+
+```text
+raw model score
+!= calibrated probability
+!= call-level risk
+!= final security decision
+```
+
+Thresholds and calibration must be selected on development data only and then frozen before final testing.
+
+## Milestone 7 — real-time engineering and product integration
+
+Only after the detector survives generalization and channel tests do we optimize product behavior:
+
+- streaming / window scheduling,
+- inference latency,
+- CPU/GPU execution path,
+- bounded memory use,
+- fault-tolerant audio ingestion,
+- live score aggregation,
+- API / backend integration,
+- frontend call-state display,
+- audit logging,
+- final post-call report.
+
+This ordering is intentional. We do not optimize a detector for real-time execution until we have evidence that it detects the right phenomenon.
+
+---
+
+# V2 acceptance philosophy
+
+Version 2 will **not** be declared successful because it reaches a headline accuracy target.
+
+A result such as `99%` on a familiar distribution is less valuable than a lower but stable result on genuinely unseen generators and corpora.
+
+The V2 report must include, at minimum:
+
+- confusion matrix,
+- per-class precision / recall / F1,
+- specificity,
+- balanced accuracy,
+- ROC-AUC,
+- PR-AUC / average precision,
+- false-positive rate on genuine speech,
+- false-negative rate on spoof speech,
+- EER where appropriate,
+- calibration diagnostics,
+- results by corpus,
+- results by generator,
+- results by attack family,
+- results by language where applicable,
+- channel-stress results,
+- failed / invalid audio counts,
+- exact dataset and checkpoint provenance.
+
+The central success criterion is:
+
+> **The model must retain useful discrimination when speaker, generator, corpus and channel conditions move away from the training distribution.**
+
+---
+
+# Immediate next action
+
+We now proceed with **V2 Milestone 0 — Dataset & Evaluation Contract**.
+
+The next work item is not model training. It is to define and commit:
+
+```text
+V2 datasets and roles
+        -> provenance schema
+        -> split constraints
+        -> locked external holdouts
+        -> leakage diagnostics
+        -> required metrics
+        -> acceptance gates
+        -> only then training
+```
+
+Once Milestone 0 is frozen, we can build V2 Baseline-0 with confidence that the experiment itself is testing the problem we actually care about.
 
 ---
 
