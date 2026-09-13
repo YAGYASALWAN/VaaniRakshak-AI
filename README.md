@@ -1,395 +1,454 @@
 # VaaniRakshak-AI
 
-## Current runnable experiments
-
-The historical milestone notes below predate the CNN and local upload demo.
-The repository now includes ASVspoof English, SEA-Spoof, and an English MLAAD
-feature-cache workflow. Implementation is not evidence of a completed GPU run.
-
-**New: [English MLAAD streaming and offline training](docs/mlaad_streaming.md).**
-Fetch each recording into memory, commit compact log-mel features, then train
-offline with epoch checkpoints. Matching genuine M-AILABS originals are required.
-See the guide for source checks, recovery, disk space, and evaluation limits.
-
-
 AI-powered cybersecurity prototype for detecting voice-cloning and synthetic-speech impersonation attacks.
 
-This repository is being built incrementally for SIH 2026. **This milestone is dataset engineering only.** There is no anti-spoofing model, API, frontend, risk engine, or blockchain layer yet.
+VaaniRakshak is being developed for SIH 2026 as a system that can analyse speech during or after a call, estimate whether the voice is likely bona fide or synthetic, and turn model evidence into a security decision rather than relying only on caller identity.
 
-## Problem
+---
 
-Voice-cloning attacks can impersonate trusted people and manipulate victims into sensitive actions (fraudulent transfers, disclosure of credentials, social-engineering of helpdesks). A defender needs a pipeline that:
+## Project status
 
-1. Accepts live or uploaded speech.
-2. Analyses short audio windows.
-3. Estimates whether the speech is bona fide human speech or AI-generated / voice-converted.
-4. Turns those estimates into a time-varying cyber-risk score.
-5. Warns the user or demands extra verification when risk is high.
+| Version / milestone | Status | Meaning |
+| --- | --- | --- |
+| **Version 1 anti-spoofing baseline** | **Concluded / frozen** | Working CNN baseline and evaluation pipeline, but not accepted as a deployment-ready detector because generalization was not proven. |
+| Dataset inspection and bias audit | Active engineering direction | Audit corpus/class confounding, speaker balance, generator balance, codec, duration, language and other shortcut risks before training again. |
+| Source verification / acquisition planning | In progress | Verify real dataset schemas and provenance before selecting large audio subsets. |
+| **Version 2 detector** | **Not trained yet** | V2 will begin only after the data and evaluation protocol is strong enough to avoid the main V1 failure mode. |
 
-Indian languages and mixed recording conditions are first-class requirements, not an afterthought.
+> **Version 1 is not presented as production-ready.** Its strongest contribution is the engineering and experimental evidence that shaped the V2 design.
 
-## Current milestone
+For the complete V1 analysis, see **[Version 1 Final Postmortem](docs/version1_postmortem.md)**.
 
-**Milestone 2: Dataset Inspection, Sampling and Bias Audit (implementation; full-suite verification pending).**
+---
 
-**NEURAL NETWORK TRAINING NOT STARTED.**
+# Version 1 — How it ended
 
-You can:
+Version 1 was our first end-to-end neural anti-spoofing baseline.
 
-- Keep raw datasets immutable.
-- Load and validate local audio.
-- Convert any file to mono 16 kHz WAV windows (~4 s).
-- Write a unified manifest (`bonafide` / `spoof`).
-- Split later by **speaker** and by **generator**, not by random rows.
+It demonstrated that we could build the complete technical loop:
 
-You cannot yet train a detector. That is intentional.
-
-## Planned architecture
-
-```
-Audio
-  → preprocessing (this milestone)
-  → anti-spoofing model          [not implemented]
-  → temporal risk engine         [not implemented]
-  → cybersecurity decision       [not implemented]
-  → warning / step-up auth       [not implemented]
+```text
+speech
+  -> decoding / preprocessing
+  -> fixed-duration audio segment
+  -> time-frequency features
+  -> CNN classifier
+  -> genuine / synthetic score
+  -> thresholded decision
+  -> evaluation report
+  -> local demo
 ```
 
-Future milestones (not in this repo yet): AASIST-style baseline, speaker verification, FastAPI + WebSockets, privacy-preserving logs, tamper-evident audit records, multilingual Indian evaluation.
+The model itself was not discarded because it could not learn. It was frozen because **the evidence was not strong enough to prove that it had learned a portable synthetic-speech signal rather than shortcuts associated with the datasets and generators used during development.**
 
-## Dataset strategy
+That distinction is the central lesson of V1.
 
-| Dataset | Role | Canonical label | Training use |
-| --- | --- | --- | --- |
-| [IndicVoices-R](https://huggingface.co/datasets/ai4bharat/indicvoices_r) | Genuine Indian speech | `bonafide` | Train / development |
-| [IndicSynth](https://aikosh.indiaai.gov.in/home/datasets/details/indicsynth.html) | Synthetic / converted Indian speech | `spoof` | Train / development |
-| [ASVspoof 2021 DF](https://huggingface.co/datasets/SpeechAntiSpoofingBenchmarks/ASVspoof2021_DF) | External benchmark | as published, mapped to `bonafide`/`spoof` later | **Never for initial training or tuning** |
+## Preserved V1 benchmark result
 
-ASVspoof 2021 DF is held out so that hyperparameter choices cannot overfit a well-known English deepfake benchmark. If the model only works on ASVspoof, it has not solved the Indian-speech problem. If it works on IndicVoices-R + IndicSynth **and** still generalises to ASVspoof, that is evidence of a speech-authenticity detector rather than a dataset detector.
+The repository contains a saved ASVspoof 2019 LA evaluation under:
 
-**Do not download the corpora yet.** Directories under `data/raw/` are placeholders. Work with locally supplied WAV files until a sampling strategy exists.
+`records/performance/asv2019_20260909T183107466708Z/metrics.json`
 
-## Engineering principles
+The recorded run used checkpoint:
 
-- **Identical preprocessing** for bona fide and spoof audio. The classifier must learn *human vs synthetic*, not *IndicVoices vs IndicSynth*.
-- **Immutable raw data.** Scripts only write under `data/processed/` and `data/manifests/`.
-- **Speaker-disjoint evaluation.** A speaker in train never appears in dev or test.
-- **Generator-disjoint evaluation.** Synthesis systems (XTTS, VITS, FreeVC, …) are stored in metadata so a later test set can use an unseen generator.
-- **No class-specific DSP.** No extra denoising, pause stripping, or loudness matching applied only to one label. Breathing, pauses, and prosody may be forensic cues.
-- **Reproducible splits** when a seed is provided.
-- **Structured validation** (no silent `except: pass`).
-- **Canonical labels** everywhere: `bonafide` and `spoof` (not `0/1`, `real/fake`, `genuine/generated`).
+`models/english_20260907T044807696536Z/best.pt`
 
-## Shortcut-learning risks (to inspect later)
+At threshold `0.5`:
 
-Because bona fide and spoof audio currently come from *different collections*, a naive model can cheat using dataset fingerprints instead of synthesis artifacts:
+| Metric | Result |
+| --- | ---: |
+| Test recordings | 71,237 |
+| Accuracy | **87.77%** |
+| Synthetic precision | **99.62%** |
+| Synthetic recall | **86.70%** |
+| Synthetic F1 | **92.71%** |
+| Genuine specificity | **97.09%** |
+| Balanced accuracy | **91.89%** |
+| ROC-AUC | **0.9789** |
+| Average precision | **0.9974** |
 
-| Risk | Why it fools a model |
+Confusion matrix:
+
+```text
+                predicted genuine   predicted synthetic
+true genuine          7141                 214
+true synthetic        8497               55385
+```
+
+These results show that V1 was a functioning anti-spoofing classifier on that recorded benchmark distribution.
+
+They do **not** establish reliable performance on:
+
+- modern unseen voice-cloning systems,
+- future TTS generators,
+- real telephone channels,
+- VoIP compression and packet-loss artifacts,
+- new microphones and environments,
+- multilingual or Indian-language speech,
+- adversarially selected real-world attacks.
+
+The saved evaluation record explicitly carries these limitations.
+
+---
+
+## Why Version 1 failed the VaaniRakshak verification standard
+
+### 1. Dataset identity became too closely correlated with class identity
+
+The most serious issue was the data design.
+
+In important V1 experiments, genuine and synthetic speech came from different source collections. This creates a dangerous shortcut:
+
+```text
+intended task:
+    human speech vs synthetic speech
+
+possible shortcut learned by the network:
+    dataset A vs dataset B
+```
+
+A classifier can exploit differences in:
+
+- microphones,
+- recording environments,
+- codecs,
+- bandwidth,
+- loudness,
+- silence / padding,
+- clip duration,
+- preprocessing,
+- speaker populations,
+- language distribution,
+- file construction.
+
+A high validation score does not remove this risk if the validation set contains the same corpus fingerprints.
+
+### 2. Validation could reward the same shortcut
+
+Ordinary random splitting is not sufficient for anti-spoofing research.
+
+If related speakers, generators, recording conditions or corpus characteristics appear on both sides of a split, the development metrics can look excellent while real-world generalization remains weak or unknown.
+
+V2 therefore requires explicit **speaker-disjoint** and **generator-disjoint** evaluation.
+
+### 3. Generator independence was not proven
+
+A useful VaaniRakshak detector must identify attacks generated by systems that were never seen during training.
+
+A model that learns the fingerprints of a few known TTS or voice-conversion systems can fail when the generator changes.
+
+V1 did not provide sufficient evidence of unseen-generator robustness.
+
+### 4. Corpus independence was not proven
+
+Real callers will not arrive through one clean benchmark distribution.
+
+They may contain:
+
+- narrow-band telephony,
+- mobile microphones,
+- background noise,
+- reverberation,
+- VoIP codecs,
+- echo cancellation,
+- packet-loss concealment,
+- different accents and languages.
+
+A detector that works on one corpus is not automatically a detector that works in the field.
+
+### 5. Benchmark performance was not equivalent to production performance
+
+The ASVspoof result is valuable because it proves the baseline was technically meaningful.
+
+But a cybersecurity system cannot be accepted from one benchmark alone.
+
+For VaaniRakshak, the acceptance criterion changed from:
+
+> "How high is the accuracy?"
+
+into:
+
+> "What evidence proves that the model is detecting synthetic speech instead of recognizing the dataset or generator that produced it?"
+
+### 6. Model scores were not established as calibrated real-world probabilities
+
+A sigmoid output or thresholded score is not automatically a trustworthy probability that a caller is synthetic.
+
+The saved V1 evaluation notes that the synthetic score was not established as a calibrated probability and that no test-set threshold or temperature fitting was performed.
+
+Future versions must clearly separate:
+
+```text
+raw model score
+    -> calibrated evidence
+    -> operating threshold
+    -> temporal call evidence
+    -> final security verdict
+```
+
+### 7. Class imbalance could make headline metrics misleading
+
+The preserved ASVspoof test contains far more synthetic than genuine samples.
+
+That means raw accuracy alone is not enough.
+
+VaaniRakshak evaluation therefore tracks:
+
+- confusion matrix,
+- per-class precision / recall / F1,
+- specificity,
+- balanced accuracy,
+- ROC-AUC,
+- average precision,
+- MCC,
+- calibration metrics,
+- class prevalence.
+
+### 8. Increasing model size would not solve the primary problem
+
+The V1 CNN already had enough capacity to learn its development distribution.
+
+A larger network could simply learn dataset shortcuts more efficiently.
+
+The conclusion was therefore:
+
+> **Fix the experiment before increasing the model.**
+
+### 9. The engineering pipeline also needed hardening
+
+V1 exposed several production-level requirements beyond model accuracy:
+
+- corrupted audio must not crash an evaluation run,
+- NaN / Inf outputs must be rejected explicitly,
+- identical preprocessing must be used for genuine and spoof classes,
+- inference precision must remain numerically stable,
+- dependency versions must be reproducible,
+- CUDA must be verified from the framework rather than assumed from the presence of a GPU,
+- predictions and metrics must be saved so reports can be recomputed without rerunning inference.
+
+---
+
+## V1 failure chain
+
+```text
+dataset source strongly correlated with class
+                |
+                v
+network can learn dataset / generator shortcuts
+                |
+                v
+ordinary validation can reward those shortcuts
+                |
+                v
+strong benchmark metrics appear more general than they are
+                |
+                v
+generator and corpus independence remain unproven
+                |
+                v
+real-world calibration and channel robustness remain unproven
+                |
+                v
+V1 fails the VaaniRakshak deployment standard
+```
+
+**Final V1 verdict:** useful baseline, valuable engineering artifact, not a production-ready detector.
+
+The baseline is frozen rather than endlessly tuned because continuing to optimize benchmark accuracy before correcting the data design would risk optimizing the wrong objective.
+
+---
+
+# What Version 2 changes
+
+V2 begins with the dataset and evaluation protocol instead of the neural network.
+
+The current engineering principles are:
+
+1. **Identical preprocessing** for bona fide and spoof audio.
+2. **Immutable raw data.**
+3. **Speaker-disjoint splits.**
+4. **Generator-disjoint evaluation.**
+5. **Dataset provenance for every sample.**
+6. **No class-specific DSP.**
+7. **External benchmarks kept out of initial training and threshold tuning.**
+8. **Audit sample rate, channels, codec, duration, language, gender, speaker and generator distributions before training.**
+9. **Save per-recording predictions and reproducible evaluation artifacts.**
+10. **No real-world accuracy claim until unseen-generator and realistic-channel tests pass.**
+
+The current dataset tooling exists specifically because V1 showed that **data provenance is part of the model architecture** in an anti-spoofing system.
+
+---
+
+# Problem statement
+
+Recent generative speech systems can clone or synthesize convincing voices from very little source audio. Attackers can use those voices to impersonate executives, officials, colleagues or family members during high-pressure calls.
+
+Traditional caller ID and voice familiarity do not reliably solve this problem.
+
+VaaniRakshak is intended to evolve toward a pipeline that:
+
+1. accepts live or uploaded speech,
+2. analyses short audio windows,
+3. estimates bona fide vs synthetic evidence,
+4. aggregates evidence over the call,
+5. produces an interpretable risk verdict,
+6. requests stronger verification when risk is high.
+
+The long-term target includes multilingual and Indian-language conditions rather than treating them as an afterthought.
+
+---
+
+# Current architecture direction
+
+```text
+Call / uploaded audio
+        |
+        v
+Audio validation + canonical preprocessing
+        |
+        v
+Anti-spoofing detector
+        |
+        v
+Window-level evidence
+        |
+        v
+Temporal risk aggregation
+        |
+        v
+Cybersecurity decision layer
+        |
+        v
+Likely genuine / inconclusive / likely synthetic
+        |
+        v
+Warning or step-up authentication
+```
+
+The final call-level verdict is intentionally separated from a single neural-network score.
+
+---
+
+# Dataset strategy
+
+The V2 data pipeline is designed around explicit provenance and shortcut auditing.
+
+Current / planned sources include:
+
+| Dataset | Intended role |
 | --- | --- |
-| Sample rate | 48 kHz studio vs 16 kHz TTS can be inferred from residual spectrum even after resampling. |
-| Codec / container | MP3 vs uncompressed WAV leaves different quantization noise. |
-| Loudness | TTS often sits in a narrow LUFS range; field recordings do not. |
-| Recording environment | Room reverb and mic noise may be unique to IndicVoices. |
-| Clip duration | If spoof clips are always ~10 s and genuine clips are 2 s, duration becomes the label. |
-| Language / gender imbalance | Model predicts majority language/gender rather than authenticity. |
-| Speaker overlap | Same speaker in train and test inflates accuracy. |
-| Generator overlap | Test generators seen in training overstates generalization. |
-| File-format differences | Header/parser artifacts if we accidentally leak non-audio features. |
-| Dataset-specific silence | One corpus pads with zeros; the other does not. |
-| Dataset-specific preprocessing | If we denoise only spoof audio, the denoiser *is* the classifier. |
+| IndicVoices-R | Genuine Indian speech candidate |
+| IndicSynth | Synthetic / converted Indian speech candidate |
+| MLAAD English workflow | Synthetic-speech experimentation and feature-cache workflow |
+| M-AILABS | Genuine-speech experimentation where source pairing is appropriate |
+| ASVspoof 2019 / 2021 | External anti-spoofing benchmarks; not proof of real-world performance |
+| SEA-Spoof workflow | Additional spoofing / frontend experimentation |
 
-The manifest stores `language`, `gender`, `speaker_id`, `generator`, `codec`, `duration`, `sample_rate`, and `dataset` so these factors can be tabulated **before** training. Statistical tests come in a later milestone.
+A dataset appearing in the repository does **not** automatically mean it is approved for V2 training. Source identity, schema, licensing/access, speaker structure, generator structure and class confounding must be verified first.
 
-## Preprocessing pipeline
+---
 
-```
-load audio          (soundfile / libsndfile decodes PCM → float32 array)
-  → validate file   (corrupt, empty, NaN/Inf, silence, duration, channels, sample rate)
-  → convert to mono (mean of channels; same rule for both classes)
-  → resample 16 kHz (windowed-sinc anti-aliasing via torchaudio)
-  → amplitude clip  (clip to [-1, 1] on save only; no peak-normalization)
-  → segment ~4 s    (configurable window/hop; default hop 2 s → 50% overlap)
-  → metadata        (unified schema, nullable fields allowed)
-  → write WAV       (under data/processed/<split>/)
-  → manifest row    (CSV under data/manifests/)
+# Preprocessing principles
+
+The canonical preprocessing path is designed to apply the same rules to both classes:
+
+```text
+load audio
+  -> validate decode / duration / silence / finite values
+  -> convert to mono
+  -> resample to the configured sample rate
+  -> segment into fixed windows
+  -> retain provenance metadata
+  -> write processed artifacts / manifest records
 ```
 
-### What the libraries are doing
+Important rule:
 
-- **NumPy**: the waveform is a 1-D array of amplitudes, typically in `[-1, 1]`.
-- **soundfile**: reads/writes audio containers. It does not “understand speech”; it unpacks samples.
-- **torchaudio.functional.resample**: conceptually, low-pass filter then interpolate onto a new time grid so duration stays the same while sample rate changes.
-- **PyYAML**: loads `configs/data_config.yaml` so 4.0 s / 16 kHz / pad-vs-skip are not magic numbers in code.
+> **Never apply a transformation only to one class unless the experiment explicitly tests that transformation.**
 
-### Short-clip policy
+Otherwise the transformation itself can become the label.
 
-Default: **`pad`** (zeros at the **end**).
+---
 
-If a clip is shorter than `window_seconds`, skip would drop it. If one dataset has shorter utterances, skip would delete that class more often and create a duration shortcut. Pad keeps the clip, marks the window, and preserves onsets.
+# Evaluation philosophy
 
-Set `segmentation.short_clip_policy: skip` in YAML if you explicitly want to drop short audio.
+A future detector will not be accepted because of one large accuracy value.
 
-## Repository layout
+We want evidence across progressively harder gates:
 
-```
-VaaniRakshak-AI/
-├── README.md
-├── .gitignore
-├── requirements.txt
-├── pyproject.toml
-├── configs/data_config.yaml          # all DSP / path / split defaults
-├── data/
-│   ├── raw/{indicvoices,indicsynth,asvspoof,local}/
-│   ├── processed/{train,dev,test}/
-│   └── manifests/
-├── src/vaanirakshak/
-│   ├── config.py                     # YAML → typed dataclasses
-│   ├── exceptions.py
-│   └── data/
-│       ├── audio_io.py               # load / save
-│       ├── validation.py             # structured checks
-│       ├── preprocessing.py          # mono, resample, segment
-│       ├── metadata.py               # manifest schema
-│       ├── splits.py                 # speaker- & generator-disjoint
-│       └── pipeline.py               # ordered end-to-end path
-├── scripts/inspect_dataset.py
-├── scripts/preprocess_dataset.py
-├── tests/test_preprocessing.py
-└── notebooks/
+```text
+in-domain holdout
+    -> speaker-disjoint holdout
+    -> generator-disjoint holdout
+    -> cross-corpus evaluation
+    -> codec / channel stress tests
+    -> realistic phone / VoIP conditions
+    -> multilingual evaluation
+    -> modern unseen generators
 ```
 
-`src/vaanirakshak/config.py` and `data/pipeline.py` were added on purpose: configuration must be typed and loadable from tests, and the CLI must not own the pipeline logic.
+Only after those gates should the project make strong deployment claims.
 
-`data/raw/local/` is a small extra folder for smoke-test files you create yourself. It is not a fourth research corpus.
+---
 
-## Setup
+# Repository documentation
 
-Python 3.11 or newer.
+Important documents:
+
+- **[Version 1 Final Postmortem](docs/version1_postmortem.md)** — why V1 was frozen and what V2 changes.
+- **[Performance Report](docs/performance_report.md)** — preserved evaluation reporting.
+- **[Fast Baseline](docs/fast_baseline.md)** — baseline experiment notes.
+- **[English Training](docs/english_training.md)** — English experiment workflow.
+- **[MLAAD Streaming](docs/mlaad_streaming.md)** — streaming / offline feature-cache training workflow.
+- **[SEA-Spoof Training](docs/sea30_training.md)** — SEA-Spoof experiment workflow.
+- **[SEA-Spoof Frontend](docs/seaspoof_frontend.md)** — frontend integration notes.
+- **[Dataset Sources](docs/dataset_sources.md)** — source and provenance observations.
+- **[Milestone 2 Handoff](docs/milestone2_handoff.md)** — dataset inspection / audit handoff.
+- **[Milestone 3](docs/milestone3.md)** — source-verification roadmap.
+
+Historical experiments are kept intentionally. They are part of the engineering record, not claims that every experiment is the current production path.
+
+---
+
+# Setup
+
+Python 3.11 or newer is recommended.
 
 ```powershell
-cd c:\Users\qwert\OneDrive\Desktop\SIH
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
 ```
 
-Equivalent: `pip install -r requirements.txt` then `pip install -e .`.
+Equivalent installation paths are available through the repository requirement files for specific experiment families.
 
-## Run tests
+---
 
-Tests synthesize waveforms. They do **not** download IndicVoices, IndicSynth, or ASVspoof.
-
-```powershell
-pytest -q
-```
-
-## Process one example WAV
-
-Create a 5-second stereo file (this is not a real dataset sample):
+# Run the test suite
 
 ```powershell
-python -c "import numpy as np, soundfile as sf; from pathlib import Path; sr=22050; t=np.arange(int(5*sr))/sr; x=np.stack([0.2*np.sin(2*np.pi*220*t), 0.2*np.sin(2*np.pi*330*t)], axis=1).astype(np.float32); p=Path('data/raw/local/example.wav'); p.parent.mkdir(parents=True, exist_ok=True); sf.write(p, x, sr); print(p)"
+python -m pytest -q
 ```
 
-Inspect (no writes):
+The repository also contains dependency-light / milestone-specific tests where documented.
+
+---
+
+# Dataset inspection example
 
 ```powershell
 python scripts/inspect_dataset.py --input data/raw/local/example.wav
 ```
 
-Preprocess:
+Dataset audit and sampling commands are documented in the milestone handoff files and configuration under `configs/`.
 
-```powershell
-python scripts/preprocess_dataset.py --input data/raw/local/example.wav --dataset local --label bonafide --split train --speaker-id spk_demo --language en
-```
+---
 
-**Expected output**
+# Research and engineering rule
 
-- Original `data/raw/local/example.wav` unchanged.
-- One or more WAVs in `data/processed/train/` named like `local__example__0.000_4.000.wav`.
-- Each processed file: **mono**, **16000 Hz**, **exactly 4.0 s** (64000 samples) with the default config.
-- Rows appended to `data/manifests/manifest.csv` with `label=bonafide`, `dataset=local`, window start/end times.
+The most important rule produced by Version 1 is now part of the project philosophy:
 
-A 5 s clip with a 4 s window and 2 s hop yields two windows: `0–4 s` (full) and `2–6 s` (last 1 s zero-padded), unless you set `short_clip_policy: skip` (then only `0–4 s`).
+> **A model that recognizes the dataset is not a model that recognizes the attack.**
 
-## Assumptions
-
-- Processed windows are 16-bit PCM WAV. Raw files may be any libsndfile-readable format.
-- Internal layout after load is `(samples, channels)` from soundfile.
-- Missing `speaker_id` is **not** treated as one global speaker; splits fall back to `source_file` so overlapping windows of the same file stay in one split.
-- `--split train` on a single smoke-test file is **not** a speaker-disjoint dataset split. Use `speaker_disjoint_split` on a full manifest later.
-- Peak normalization is off. Clipping on write is logged.
-- ASVspoof may be ingested later into the same schema but `use_for_training: false` in config.
-
-## Dataset Inspection, Sampling and Bias Audit
-
-**NEURAL NETWORK TRAINING NOT STARTED.** No dataset downloads occur in these tools.
-The default sampling config uses tiny synthetic metadata fixtures, clearly named
-`demo_generator_a` and `demo_generator_b`. Results from those fixtures describe
-the software's behavior, never the actual corpora.
-
-### Architecture and manifest compatibility
-
-Milestone 1's audio loader, transforms, pipeline, processed-record dataclass,
-split helpers, and original 12 tests are unchanged. The public data package now
-loads audio exports lazily, so metadata work does not import torch or soundfile.
-
-Adapters translate source-specific fields into the existing 16 manifest columns,
-plus channels, file format, age group, transcript, source language/speaker values,
-source speaker, source/target references, original split, role, metadata locator,
-RMS and silence observations. This pre-acquisition DataFrame permits null duration,
-sample rate, processed path and segment times. It is not a processed
-`ManifestRecord`, whose stricter audio invariants remain intact. Existing split
-helpers return the core columns; keep the inspection table and join by
-`(dataset, sample_id)` to retain extra provenance after using those helpers.
-
-An adapter is a translator, not a downloader or audio transform. IndicSynth's
-target speaker becomes `speaker_id`; source speaker and reference recordings
-stay separate. Reference audio is never treated as the generated audio path.
-Speaker IDs are namespaced by dataset by default. Supply a verified shared
-`namespace` only if two exports genuinely use the same identity domain.
-Do not claim disjointness across source/target roles merely because target IDs
-are disjoint: future split design must consider connected source speakers and
-reference recordings too. Running speaker and generator split functions in
-sequence can break the earlier constraint; joint constraints need explicit
-validation before any future training experiment.
-
-### Why these checks exist
-
-A naive merge confounds dataset with class: genuine audio comes from one source
-and spoof audio from another. A detector can get 99% accuracy on an equally
-confounded test set by recognizing recording noise, codecs, padding or language
-instead of synthesis. That result would not demonstrate cybersecurity utility.
-The audit always flags complete dataset/class confounding, even when measured
-distributions match.
-
-Identical 16 kHz mono processing standardizes model input. It cannot undo lossy
-codec artifacts, bandwidth limits, prior enhancement, microphones or room noise.
-Keep original measurements for the acquisition audit and re-audit processed
-audio later. Do not normalize only one class.
-
-Hours balance exposure better than counts when clip lengths differ: 1,000
-ten-second clips contain five times the time of 1,000 two-second clips. Sampling
-therefore uses original clip seconds. It rejects processed windows so overlapping
-audio is not counted repeatedly. Report both time and counts.
-
-Language is restricted to the observed class intersection. Speaker diversity
-reduces domination by a few voices. Generator names are retained verbatim,
-including previously unseen names, so later generator-disjoint experiments can
-test generalization to attacks produced by systems absent from training.
-Preserving metadata supports that experiment; it does not run it.
-
-ASVspoof is marked external and excluded from the primary audit/planner. It must
-not guide training, tuning, threshold optimization, or model selection. Inspect
-it separately when useful. Full datasets are intentionally not downloaded:
-first determine a justified subset from metadata and verify access/identities.
-
-### Offline examples
-
-Install the project in your existing virtual environment:
-
-```bash
-python -m pip install -e ".[dev,analysis]"
-python scripts/inspect_dataset.py --dataset indicvoices --metadata tests/fixtures/indicvoices.json --output data/reports/indicvoices-demo
-python scripts/inspect_dataset.py --dataset indicsynth --metadata tests/fixtures/indicsynth.json --output data/reports/indicsynth-demo
-python scripts/audit_datasets.py --config configs/sampling_config.yaml --plots
-python scripts/plan_sample.py --config configs/sampling_config.yaml
-python -m pytest -q
-```
-
-Without installing the project, set `PYTHONPATH=src` before commands (on Windows
-CMD use `set PYTHONPATH=src`). Metadata-only commands require numpy, pandas and
-PyYAML; plots additionally require matplotlib. A dependency-light test command is:
-
-```bash
-python -m unittest discover -s tests -p test_dataset_analysis.py -v
-```
-
-That command tests Milestone 2 only. It is not a substitute for the full pytest
-suite, which also needs the existing torch, torchaudio and soundfile dependencies.
-
-For real metadata, configure local CSV/JSON/JSONL exports in `inputs`.
-Multiple exports per dataset are supported by using a list of input specs.
-Paths in YAML resolve relative to the config file, not the working directory.
-CSV IDs retain leading zeros. Numeric durations must be seconds. Files are capped
-at 50 MiB and 100,000 rows; the in-memory greedy planner is for small development
-exports, not million-row corpus optimization.
-
-Each input spec can provide `language`, `namespace`, `field_map`, and
-`locator_prefix`. A field map is canonical field -> actual source key, including
-dotted nested keys such as `audio.path`. Known aliases are conveniences, not a
-claim that every release uses them. Numeric ASVspoof labels require a verified
-`label_map` in its input spec (for example, only after confirming the mirror's
-class mapping). Unknown labels fail explicitly.
-
-If sample ID/path is absent, use a stable locator prefix containing dataset
-revision, config/language, split and export identity. Row position is appended,
-so changing row order requires new provenance. Generated IDs are deterministic
-hashes of this locator, not invented source metadata. Actual audio location
-must still be resolved before acquisition. Source sample rate is not inferred
-from a dataset card or generator name; missing values remain null.
-
-The inspection command's `--audio-root` opts into local audio measurements using
-Milestone 1's loader and silence validator. It restricts access to that root,
-records decode errors, and never fetches URLs. RMS is an amplitude proxy, not
-perceptual LUFS; its denominator is measured clips only.
-
-### Sampling semantics and feasibility
-
-- Empty `languages` uses all observed common languages. The six-language starter
-  list is a suggestion until metadata confirms coverage.
-- `target_total_hours`, when non-null, overrides class targets and divides equally.
-  Otherwise specify `target_hours_per_class: {bonafide: ..., spoof: ...}`.
-- `target_hours_per_language` means hours **per class** for each named language.
-  Remaining class budget is divided across unspecified selected languages.
-- `max_speakers` is global; minimum speakers is per language and class; the clip
-  cap is global per namespaced speaker.
-- Missing duration, speaker, language, or spoof generator prevents eligibility;
-  excluded counts are reported. No labels, durations, or generators are fabricated.
-- Greedy selection prioritizes speaker coverage, language budget progress,
-  speaker clip counts, and optional generator time diversity, with seeded identity
-  hashes breaking ties. Input order does not affect results with stable IDs.
-- Whole clips never exceed time budgets. The maximum generator share applies to
-  actual selected spoof time; excess is removed and shortfalls disclosed.
-- Reserved `holdout_generators` are excluded using exact observed values.
-- Relative class imbalance and language underfill use `balance_tolerance`.
-  Unsatisfied coverage/balance yields `infeasible` and CLI exit code 2.
-  The heuristic may underfill even where a different combination exists.
-  Constraints are never silently relaxed. Candidate plans do not authorize downloads.
-
-### Transparent audit thresholds
-
-All thresholds are configurable through `bias_thresholds`. A value at or above
-the high threshold is HIGH, at or above medium is MEDIUM, otherwise LOW.
-
-| Check | Metric | MEDIUM | HIGH |
-| --- | --- | ---: | ---: |
-| Sample rate, channels, codec, format, language, gender | Total variation distance | 0.20 | 0.50 |
-| Duration | Larger mean / smaller mean | 1.25 | 2.00 |
-| Speaker dominance | Largest observed single-speaker share | 0.10 | 0.25 |
-| Generator dominance | Largest observed single-generator spoof share | 0.60 | 0.80 |
-| Loudness proxy | Absolute class mean RMS difference | 0.03 | 0.10 |
-| Missing metadata | Missing fraction in either relevant class | 0.20 | 0.80 |
-
-Categorical distance is half the sum of absolute probability differences: zero
-means identical observed distributions; one means disjoint support. Both file
-and audio-duration weights are evaluated; dominance also checks both. Missing
-values are excluded from distributions and reported separately, including fully
-unknown fields. One-class-only languages and complete dataset/class confounding
-are HIGH. No opaque combined score or statistical significance claim is made.
-Low risk on measured fields does not certify authenticity learning or fairness.
-
-### Generated reports
-
-Ignored under `data/reports/`: `dataset_summary.json`, `class_balance.csv`,
-`language_balance.csv`, `speaker_balance.csv`, `generator_balance.csv`,
-`language_generator.csv`, `bias_report.json`, `sampling_plan.json`,
-`candidate_plan.csv`, and optional `plots/`. Inspection also emits
-`normalized_metadata.csv`. Reports contain supplied-row scope and observed
-duration coverage. All-unknown duration yields null hours; partially known hours
-are a subtotal, not a full-corpus estimate.
-
-See [schema observations](docs/dataset_sources.md) for publisher evidence and
-manual checks, and [Milestone 2 handoff](docs/milestone2_handoff.md) for examples,
-the final file tree, and verification status. Stop here; do not start Milestone 3.
+VaaniRakshak-AI will treat generalization evidence, data provenance and evaluation design as first-class components of the security system.
