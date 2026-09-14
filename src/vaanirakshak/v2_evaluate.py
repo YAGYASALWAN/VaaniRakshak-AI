@@ -19,7 +19,7 @@ import torch
 import torchaudio
 
 from vaanirakshak.v2_audio import MODEL_SAMPLE_RATE
-from vaanirakshak.v2_calibration import calibration_metrics
+from vaanirakshak.v2_calibration import calibration_metrics, logit_to_probability, probability_to_logit
 from vaanirakshak.v2_data_contract import (
     audit_cross_dataset,
     audit_manifest,
@@ -75,10 +75,16 @@ def _score_recording(detector: CheckpointDetector, wave: np.ndarray) -> tuple[fl
     started = time.perf_counter()
     scores = [detector.score(window, MODEL_SAMPLE_RATE) for window in _windows(wave)]
     elapsed_ms = (time.perf_counter() - started) * 1000.0
-    # Median is intentionally robust to one isolated anomalous window. The live
-    # product has richer temporal aggregation; this recording-level benchmark
-    # keeps the base detector evaluation simple and reproducible.
-    return float(statistics.median(scores)), scores, elapsed_ms
+
+    # Aggregate in logit space. Temperature scaling divides logits by a positive
+    # scalar, so median-logit aggregation commutes with calibration. This keeps
+    # the transformed checkpoint threshold decision-preserving even for an even
+    # number of recording windows, where arithmetic median probabilities would
+    # otherwise introduce a nonlinear averaging artifact.
+    logits = probability_to_logit(scores)
+    recording_logit = float(statistics.median(logits.tolist()))
+    recording_score = float(logit_to_probability(np.asarray([recording_logit], dtype=np.float64))[0])
+    return recording_score, scores, elapsed_ms
 
 
 def _write_json(path: Path, value) -> None:
@@ -141,6 +147,7 @@ def evaluate(
                 "generator_id": record.generator_id,
                 "score": score,
                 "score_semantics": "calibrated_probability" if detector.calibrated_probability else "uncalibrated_detector_score",
+                "recording_aggregation": "median_logit",
                 "threshold": detector.threshold,
                 "predicted_spoof": score >= detector.threshold,
                 "window_scores": window_scores,
@@ -202,6 +209,7 @@ def evaluate(
         "manifest_fingerprint": manifest_fingerprint(records),
         "test_records": len(test_records),
         "threshold_source": "frozen checkpoint; no test-set tuning",
+        "recording_aggregation": "median_logit",
         "overall": overall,
         "probability_quality": probability_quality,
         "by_dataset": by_dataset,
