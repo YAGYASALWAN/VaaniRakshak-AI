@@ -29,6 +29,11 @@ function setConnection(text, active = false) {
   el('connection-pill').classList.toggle('active', active);
 }
 
+function renderSpeechGate(value) {
+  if (!value) return;
+  el('speech-gate').textContent = Array.isArray(value) ? value.join(', ') : String(value);
+}
+
 function resetLiveUI() {
   el('call-state').textContent = 'Ready';
   el('timer').textContent = '00:00';
@@ -56,6 +61,7 @@ function renderSummary(summary) {
   el('segments').textContent = String(summary.segments_analyzed);
   el('skipped').textContent = String(summary.segments_skipped);
   el('suspicious').textContent = String(summary.suspicious_segments);
+  renderSpeechGate(summary.speech_gate);
   if (summary.window_seconds && summary.hop_seconds) {
     el('windowing').textContent = `${summary.window_seconds.toFixed(0)}s / ${summary.hop_seconds.toFixed(0)}s`;
   }
@@ -65,15 +71,16 @@ function addSegment(segment) {
   const timeline = el('timeline');
   timeline.querySelector('.empty')?.remove();
   const block = document.createElement('div');
+  const gate = segment.quality?.speech_gate || 'speech gate';
 
   if (!segment.analyzed || segment.synthetic_score == null) {
     block.className = 'segment skipped';
     const reason = segment.quality?.reason || 'quality_gate';
-    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · skipped (${reason})`;
+    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · skipped (${reason}) · ${gate}`;
   } else {
     const evidence = Number.isFinite(segment.evidence_signal) ? segment.evidence_signal : (segment.suspicious ? 0.6 : 0.4);
     block.className = evidence >= 0.75 ? 'segment high' : evidence >= 0.5 ? 'segment mid' : 'segment low';
-    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · score ${segment.synthetic_score.toFixed(3)} · threshold ${segment.threshold.toFixed(3)} · speech ${(segment.quality.speech_ratio * 100).toFixed(0)}%`;
+    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · score ${segment.synthetic_score.toFixed(3)} · threshold ${segment.threshold.toFixed(3)} · speech ${(segment.quality.speech_ratio * 100).toFixed(0)}% · ${gate}`;
   }
   block.setAttribute('aria-label', block.title);
   timeline.appendChild(block);
@@ -88,7 +95,7 @@ function renderFinal(result) {
   if (!result.enough_evidence) {
     el('final-copy').textContent = `Only ${result.usable_speech_seconds.toFixed(1)} seconds of usable speech across ${result.segments_analyzed} analyzed windows were available. VaaniRakshak refused to force a call-level verdict.`;
   } else {
-    el('final-copy').textContent = `${result.suspicious_segments} of ${result.segments_analyzed} analyzed windows crossed detector threshold ${result.threshold.toFixed(3)}; ${result.segments_skipped} windows were excluded by the quality gate.`;
+    el('final-copy').textContent = `${result.suspicious_segments} of ${result.segments_analyzed} analyzed windows crossed detector threshold ${result.threshold.toFixed(3)}; ${result.segments_skipped} windows were excluded by the active speech/quality gate.`;
   }
   el('final-notice').textContent = result.notice;
 
@@ -133,6 +140,7 @@ async function loadStatus() {
     if (!response.ok) throw new Error(status.error || status.detail || 'V2 backend unavailable.');
     backendReady = status.ready;
     el('mode').textContent = status.analysis_mode.toUpperCase();
+    renderSpeechGate(status.quality_gate);
     el('notice').textContent = `${status.notice} Detector threshold: ${status.threshold.toFixed(3)}. Scores are${status.calibrated_probability ? '' : ' not'} calibrated probabilities.`;
     if (status.window_seconds && status.hop_seconds) el('windowing').textContent = `${status.window_seconds}s / ${status.hop_seconds}s`;
     el('start').disabled = !backendReady;
@@ -142,6 +150,7 @@ async function loadStatus() {
     backendReady = false;
     el('start').disabled = true;
     el('mode').textContent = 'Offline';
+    el('speech-gate').textContent = 'Unavailable';
     setConnection('Backend offline');
     setMessage(error.message, true);
   }
@@ -149,10 +158,14 @@ async function loadStatus() {
 
 async function handleStreamMessage(event) {
   const data = JSON.parse(event.data);
-  if (data.type === 'connected') return;
+  if (data.type === 'connected') {
+    renderSpeechGate(data.speech_gate);
+    return;
+  }
   if (data.type === 'started') {
     el('call-state').textContent = 'Call in progress';
     el('stop').disabled = false;
+    renderSpeechGate(data.speech_gate);
     setConnection('Streaming', true);
     setMessage(`Microphone audio is streaming to ${data.model || 'the V2 detector'}.`);
     el('notice').textContent = data.notice;
