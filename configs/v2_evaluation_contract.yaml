@@ -1,0 +1,127 @@
+version: 1
+project: VaaniRakshak-V2
+purpose: >-
+  Prevent V2 from reporting only an easy in-domain score. Every candidate detector
+  must be evaluated under multiple data-separation scenarios before it can replace
+  the mock/legacy integration detector in the live product.
+
+labels:
+  bonafide: genuine human speech
+  spoof: synthetic, cloned, converted, or otherwise generated speech
+
+manifest_required_fields:
+  - record_id
+  - label
+  - dataset
+  - split
+  - audio_ref
+  - content_sha256
+
+spoof_required_fields:
+  - generator_id
+
+recommended_metadata:
+  - speaker_id
+  - source_utterance_id
+  - language
+  - codec
+  - sample_rate
+
+scenarios:
+  in_domain:
+    description: Train/dev/test within one benchmark using its official or leakage-safe partition.
+    required: true
+    metrics:
+      - roc_auc
+      - pr_auc
+      - eer
+      - f1
+      - precision
+      - recall
+      - false_positive_rate
+      - false_negative_rate
+
+  unseen_generator:
+    description: >-
+      No spoof generator identity used in the test split may appear in train or dev.
+      Related source utterances must remain within a single split.
+    required: true
+    hard_constraints:
+      generator_disjoint: true
+      source_utterance_disjoint: true
+      content_hash_disjoint: true
+
+  cross_dataset:
+    description: >-
+      Entire evaluation datasets are absent from train/dev. This is the primary
+      guard against dataset-provenance shortcuts.
+    required: true
+    hard_constraints:
+      evaluation_dataset_absent_from_train_dev: true
+      content_hash_disjoint: true
+
+  telephony_robustness:
+    description: >-
+      Re-evaluate a frozen test set after telephone-channel transformations. Do not
+      tune the model or threshold on these transformed test items.
+    required: true
+    transformations:
+      - narrowband_8khz
+      - g711_mulaw
+      - g711_alaw
+      - low_bitrate_compression
+
+  noise_robustness:
+    description: >-
+      Re-evaluate a frozen test set under realistic background noise and SNR bands.
+    required: true
+    snr_db:
+      - 20
+      - 10
+      - 5
+
+  duration_robustness:
+    description: Test the same frozen evaluation population at shorter speech durations.
+    required: true
+    durations_seconds:
+      - 2
+      - 4
+      - 8
+
+candidate_data_roles:
+  ASVspoof_2019_LA:
+    role: balanced_baseline_train_dev
+    note: Contains bonafide and logical-access spoof speech; use official partitions where applicable.
+
+  ASVspoof_2021_DF:
+    role: cross_dataset_evaluation_candidate
+    note: Keep absent from training when used as cross-dataset evaluation.
+
+  MLAAD:
+    role: synthetic_generator_diversity_candidate
+    note: >-
+      Treat generator-rich synthetic speech as augmentation/evaluation material, not
+      as evidence that the real-speech side of a binary training set is matched.
+      Preserve generator metadata. Dataset license is non-commercial academic use.
+
+release_gate:
+  product_detector_requires:
+    - checkpoint_schema_is_v2
+    - threshold_selected_on_dev_only
+    - no_test_threshold_tuning
+    - in_domain_report
+    - unseen_generator_report
+    - cross_dataset_report
+    - telephony_robustness_report
+    - false_positive_analysis
+
+  forbidden_claims_without_calibration:
+    - probability_of_being_fake
+    - probability_of_authenticity
+
+  forbidden_practices:
+    - mix_train_and_test_generators_in_unseen_generator_scenario
+    - use_test_set_to_choose_threshold
+    - report_only_accuracy
+    - silently_substitute_an_older_checkpoint
+    - treat_synthetic_only_corpus_as_balanced_binary_dataset
