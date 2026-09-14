@@ -24,6 +24,10 @@ function fmtTime(seconds) {
   return `${mins}:${secs}`;
 }
 
+function fmtLatency(value) {
+  return Number.isFinite(value) ? `${value.toFixed(1)} ms` : '--';
+}
+
 function setConnection(text, active = false) {
   el('connection-pill').textContent = text;
   el('connection-pill').classList.toggle('active', active);
@@ -46,6 +50,9 @@ function resetLiveUI() {
   el('segments').textContent = '0';
   el('skipped').textContent = '0';
   el('suspicious').textContent = '0';
+  el('preprocess-latency').textContent = '--';
+  el('inference-latency').textContent = '--';
+  el('window-latency').textContent = '--';
   el('timeline').innerHTML = '<div class="empty">No windows yet.</div>';
   el('final-card').hidden = true;
 }
@@ -61,6 +68,9 @@ function renderSummary(summary) {
   el('segments').textContent = String(summary.segments_analyzed);
   el('skipped').textContent = String(summary.segments_skipped);
   el('suspicious').textContent = String(summary.suspicious_segments);
+  el('preprocess-latency').textContent = fmtLatency(summary.mean_preprocessing_ms);
+  el('inference-latency').textContent = fmtLatency(summary.mean_inference_ms);
+  el('window-latency').textContent = fmtLatency(summary.mean_total_window_ms);
   renderSpeechGate(summary.speech_gate);
   if (summary.window_seconds && summary.hop_seconds) {
     el('windowing').textContent = `${summary.window_seconds.toFixed(0)}s / ${summary.hop_seconds.toFixed(0)}s`;
@@ -72,15 +82,16 @@ function addSegment(segment) {
   timeline.querySelector('.empty')?.remove();
   const block = document.createElement('div');
   const gate = segment.quality?.speech_gate || 'speech gate';
+  const latency = Number.isFinite(segment.total_analysis_ms) ? ` · ${segment.total_analysis_ms.toFixed(1)} ms` : '';
 
   if (!segment.analyzed || segment.synthetic_score == null) {
     block.className = 'segment skipped';
     const reason = segment.quality?.reason || 'quality_gate';
-    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · skipped (${reason}) · ${gate}`;
+    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · skipped (${reason}) · ${gate}${latency}`;
   } else {
     const evidence = Number.isFinite(segment.evidence_signal) ? segment.evidence_signal : (segment.suspicious ? 0.6 : 0.4);
     block.className = evidence >= 0.75 ? 'segment high' : evidence >= 0.5 ? 'segment mid' : 'segment low';
-    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · score ${segment.synthetic_score.toFixed(3)} · threshold ${segment.threshold.toFixed(3)} · speech ${(segment.quality.speech_ratio * 100).toFixed(0)}% · ${gate}`;
+    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · score ${segment.synthetic_score.toFixed(3)} · threshold ${segment.threshold.toFixed(3)} · speech ${(segment.quality.speech_ratio * 100).toFixed(0)}% · ${gate}${latency}`;
   }
   block.setAttribute('aria-label', block.title);
   timeline.appendChild(block);
