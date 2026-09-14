@@ -7,6 +7,34 @@ from scripts.v2_data_status import inspect
 from vaanirakshak.v2_data_contract import AudioRecord, write_jsonl
 
 
+def fixture_records():
+    return [
+        AudioRecord(
+            record_id="real-1",
+            label="bonafide",
+            dataset="fixture",
+            split="train",
+            audio_ref="audio/real.flac",
+            content_sha256="a" * 64,
+            speaker_id="speaker-a",
+            sample_rate=16_000,
+            codec="FLAC/PCM_16",
+        ),
+        AudioRecord(
+            record_id="fake-1",
+            label="spoof",
+            dataset="fixture",
+            split="train",
+            audio_ref="audio/fake.flac",
+            content_sha256="b" * 64,
+            generator_id="fixture-generator",
+            speaker_id="speaker-b",
+            sample_rate=16_000,
+            codec="FLAC/PCM_16",
+        ),
+    ]
+
+
 class V2DataStatusTests(unittest.TestCase):
     def test_not_started_directory_is_safe(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -41,6 +69,7 @@ class V2DataStatusTests(unittest.TestCase):
             self.assertTrue(report["safe_to_resume"])
             self.assertEqual(report["receipts"]["completed_groups"], 1)
             self.assertEqual(report["receipts"]["planned_groups"], 2)
+            self.assertFalse(report["receipts"]["all_planned_groups_committed"])
             self.assertEqual(report["receipts"]["receipt_records"], 2)
             self.assertEqual(report["transfer"]["reserved_bytes"], 1234)
             self.assertIn("same v2_prepare_sea", report["next_action"])
@@ -57,38 +86,48 @@ class V2DataStatusTests(unittest.TestCase):
     def test_audited_manifest_is_complete_even_when_empty_splits_are_warnings(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            records = [
-                AudioRecord(
-                    record_id="real-1",
-                    label="bonafide",
-                    dataset="fixture",
-                    split="train",
-                    audio_ref="audio/real.flac",
-                    content_sha256="a" * 64,
-                    speaker_id="speaker-a",
-                    sample_rate=16_000,
-                    codec="FLAC/PCM_16",
-                ),
-                AudioRecord(
-                    record_id="fake-1",
-                    label="spoof",
-                    dataset="fixture",
-                    split="train",
-                    audio_ref="audio/fake.flac",
-                    content_sha256="b" * 64,
-                    generator_id="fixture-generator",
-                    speaker_id="speaker-b",
-                    sample_rate=16_000,
-                    codec="FLAC/PCM_16",
-                ),
-            ]
-            write_jsonl(root / "manifest.jsonl", records)
+            write_jsonl(root / "manifest.jsonl", fixture_records())
             report = inspect(root)
             self.assertEqual(report["state"], "complete")
             self.assertTrue(report["safe_to_resume"])
             self.assertTrue(report["manifest"]["audit_ok"])
             self.assertEqual(report["manifest"]["records"], 2)
             self.assertTrue(report["manifest"]["audit_warnings"])
+
+    def test_stale_clean_manifest_does_not_override_incomplete_current_plan(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "receipts").mkdir()
+            plan = {
+                "groups": [{"unit": "g1"}, {"unit": "g2"}],
+                "estimated_payload_bytes": 200,
+                "english_rows_before_audit": 4,
+            }
+            (root / "v2_sea_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            receipt = {"group": {"unit": "g1"}, "records": []}
+            (root / "receipts" / "g1.json").write_text(json.dumps(receipt), encoding="utf-8")
+            write_jsonl(root / "manifest.jsonl", fixture_records())
+
+            report = inspect(root)
+            self.assertEqual(report["state"], "materializing")
+            self.assertTrue(report["manifest"]["audit_ok"])
+            self.assertFalse(report["receipts"]["all_planned_groups_committed"])
+
+    def test_completed_plan_with_manifest_receipt_count_mismatch_is_blocked(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "receipts").mkdir()
+            plan = {"groups": [{"unit": "g1"}], "estimated_payload_bytes": 100}
+            (root / "v2_sea_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            # Receipt claims no accepted records while the manifest contains two.
+            receipt = {"group": {"unit": "g1"}, "records": []}
+            (root / "receipts" / "g1.json").write_text(json.dumps(receipt), encoding="utf-8")
+            write_jsonl(root / "manifest.jsonl", fixture_records())
+
+            report = inspect(root)
+            self.assertEqual(report["state"], "blocked")
+            self.assertFalse(report["safe_to_resume"])
+            self.assertTrue(any("receipt record count" in issue for issue in report["issues"]))
 
     def test_retry_cache_usage_is_visible(self):
         with tempfile.TemporaryDirectory() as folder:
