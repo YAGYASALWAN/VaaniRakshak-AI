@@ -28,6 +28,8 @@ class V2TrainingResumeContractTests(unittest.TestCase):
             "schema": TRAINING_STATE_SCHEMA,
             "manifest_fingerprint": "abc123",
             "training_contract": self.contract(),
+            "backbone_config": {"hidden_size": 768},
+            "model_spec": {"architecture": "wavlm"},
             "model": {},
             "optimizer": {},
             "scaler": {},
@@ -61,6 +63,36 @@ class V2TrainingResumeContractTests(unittest.TestCase):
         state = self.state()
         del state["optimizer"]
         with self.assertRaisesRegex(ValueError, "missing required fields"):
+            _validate_resume_state(state, contract=self.contract(), fingerprint="abc123")
+
+    def test_missing_exported_model_config_is_rejected(self):
+        state = self.state()
+        del state["backbone_config"]
+        with self.assertRaisesRegex(ValueError, "missing required fields"):
+            _validate_resume_state(state, contract=self.contract(), fingerprint="abc123")
+
+    def test_completed_epoch_must_be_within_contract(self):
+        state = self.state()
+        state["epoch"] = 9
+        with self.assertRaisesRegex(ValueError, "invalid completed epoch"):
+            _validate_resume_state(state, contract=self.contract(), fingerprint="abc123")
+
+    def test_history_must_match_completed_epoch(self):
+        state = self.state()
+        state["history"] = [{"epoch": 1}, {"epoch": 2}]
+        with self.assertRaisesRegex(ValueError, "history does not match"):
+            _validate_resume_state(state, contract=self.contract(), fingerprint="abc123")
+
+    def test_history_epochs_must_be_contiguous(self):
+        state = self.state()
+        state["history"] = [{"epoch": 1}, {"epoch": 3}, {"epoch": 2}]
+        with self.assertRaisesRegex(ValueError, "not contiguous"):
+            _validate_resume_state(state, contract=self.contract(), fingerprint="abc123")
+
+    def test_best_eer_must_be_finite_probability(self):
+        state = self.state()
+        state["best_eer"] = float("nan")
+        with self.assertRaisesRegex(ValueError, "invalid best_eer"):
             _validate_resume_state(state, contract=self.contract(), fingerprint="abc123")
 
 
