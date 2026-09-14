@@ -30,6 +30,14 @@ function fmtLatency(value) {
   return Number.isFinite(value) ? `${value.toFixed(1)} ms` : '--';
 }
 
+function fmtPercent(value) {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '--';
+}
+
+function fmtNumber(value, digits = 3) {
+  return Number.isFinite(value) ? value.toFixed(digits) : '--';
+}
+
 function setConnection(text, active = false) {
   el('connection-pill').textContent = text;
   el('connection-pill').classList.toggle('active', active);
@@ -59,6 +67,9 @@ function resetLiveUI() {
   evidenceWindows = [];
   auditReport = null;
   el('download-report').disabled = true;
+  el('print-report').disabled = true;
+  el('report-generated').textContent = '';
+  el('final-details').innerHTML = '';
   el('call-state').textContent = 'Ready';
   el('timer').textContent = '00:00';
   el('risk-score').textContent = '--';
@@ -119,12 +130,12 @@ function addSegment(segment) {
   timeline.appendChild(block);
 }
 
-function buildAuditReport(finalResult) {
+function buildAuditReport(finalResult, generatedAt) {
   const summary = { ...finalResult };
   delete summary.type;
   return {
     schema: 'vaanirakshak-v2-call-audit-v1',
-    generated_at_utc: new Date().toISOString(),
+    generated_at_utc: generatedAt,
     privacy: {
       raw_audio_included: false,
       raw_audio_persisted_by_report_export: false,
@@ -150,8 +161,62 @@ function downloadAuditReport() {
   URL.revokeObjectURL(url);
 }
 
+function printReport() {
+  if (!auditReport) return;
+  window.print();
+}
+
+function addReportDetail(container, label, value, wide = false) {
+  const item = document.createElement('div');
+  item.className = wide ? 'report-detail wide' : 'report-detail';
+  const key = document.createElement('span');
+  const data = document.createElement('strong');
+  key.textContent = label;
+  data.textContent = value == null || value === '' ? '--' : String(value);
+  item.append(key, data);
+  container.appendChild(item);
+}
+
+function realtimeReportValue(result) {
+  if (result.observed_mean_within_hop_budget === true && Number.isFinite(result.realtime_margin_ms)) {
+    return `Within ${result.realtime_budget_ms.toFixed(0)} ms hop budget by ${result.realtime_margin_ms.toFixed(0)} ms`;
+  }
+  if (result.observed_mean_within_hop_budget === false && Number.isFinite(result.realtime_margin_ms)) {
+    return `Over ${result.realtime_budget_ms.toFixed(0)} ms hop budget by ${Math.abs(result.realtime_margin_ms).toFixed(0)} ms`;
+  }
+  return Number.isFinite(result.realtime_budget_ms) ? `${result.realtime_budget_ms.toFixed(0)} ms hop budget; insufficient latency evidence` : '--';
+}
+
+function renderReportDetails(result) {
+  const details = el('final-details');
+  details.innerHTML = '';
+  const gate = Array.isArray(result.speech_gate) ? result.speech_gate.join(', ') : result.speech_gate;
+  const semantics = result.calibrated_probability ? 'Calibrated synthetic-speech probability' : 'Uncalibrated detector score';
+  const detectorSha = result.detector?.checkpoint_sha256 || null;
+
+  addReportDetail(details, 'Session ID', result.session_id, true);
+  addReportDetail(details, 'Detector', result.model);
+  addReportDetail(details, 'Analysis mode', result.analysis_mode);
+  addReportDetail(details, 'Score semantics', semantics, true);
+  addReportDetail(details, 'Operating threshold', fmtNumber(result.threshold));
+  addReportDetail(details, 'Speech gate', gate);
+  addReportDetail(details, 'Call audio', `${result.duration_seconds.toFixed(1)} s`);
+  addReportDetail(details, 'Usable speech', `${result.usable_speech_seconds.toFixed(1)} s`);
+  addReportDetail(details, 'Analyzed windows', result.segments_analyzed);
+  addReportDetail(details, 'Skipped windows', result.segments_skipped);
+  addReportDetail(details, 'Suspicious windows', `${result.suspicious_segments} (${fmtPercent(result.suspicious_ratio)})`);
+  addReportDetail(details, 'Window / hop', `${result.window_seconds.toFixed(0)} s / ${result.hop_seconds.toFixed(0)} s`);
+  addReportDetail(details, 'Mean preprocessing', fmtLatency(result.mean_preprocessing_ms));
+  addReportDetail(details, 'Mean inference', fmtLatency(result.mean_inference_ms));
+  addReportDetail(details, 'Mean total window', fmtLatency(result.mean_total_window_ms));
+  addReportDetail(details, 'Real-time status', realtimeReportValue(result), true);
+  if (detectorSha) addReportDetail(details, 'Checkpoint SHA-256', detectorSha, true);
+}
+
 function renderFinal(result) {
   renderSummary(result);
+  const generatedAt = new Date().toISOString();
+  el('report-generated').textContent = `Generated ${new Date(generatedAt).toLocaleString()}`;
   el('final-score').textContent = result.enough_evidence ? `${result.risk_score}/100` : '--';
   el('final-risk').textContent = result.risk_label;
   el('final-verdict').textContent = result.verdict;
@@ -162,6 +227,7 @@ function renderFinal(result) {
     el('final-copy').textContent = `${result.suspicious_segments} of ${result.segments_analyzed} analyzed windows crossed detector threshold ${result.threshold.toFixed(3)}; ${result.segments_skipped} windows were excluded by the active speech/quality gate.`;
   }
   el('final-notice').textContent = result.notice;
+  renderReportDetails(result);
 
   const regions = el('regions');
   regions.innerHTML = '';
@@ -172,12 +238,17 @@ function renderFinal(result) {
     for (const region of result.regions) {
       const row = document.createElement('div');
       row.className = 'region-row';
-      row.innerHTML = `<span>${region.start_seconds.toFixed(1)}–${region.end_seconds.toFixed(1)} s</span><strong>${region.synthetic_score.toFixed(3)}</strong>`;
+      const interval = document.createElement('span');
+      const score = document.createElement('strong');
+      interval.textContent = `${region.start_seconds.toFixed(1)}–${region.end_seconds.toFixed(1)} s`;
+      score.textContent = region.synthetic_score.toFixed(3);
+      row.append(interval, score);
       regions.appendChild(row);
     }
   }
-  auditReport = buildAuditReport(result);
+  auditReport = buildAuditReport(result, generatedAt);
   el('download-report').disabled = false;
+  el('print-report').disabled = false;
   el('final-card').hidden = false;
   el('final-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -255,7 +326,7 @@ async function handleStreamMessage(event) {
     renderFinal(data);
     el('call-state').textContent = 'Analysis complete';
     setConnection('Complete', true);
-    setMessage('Final call report generated. Audio was not added to the audit export.');
+    setMessage('Final call report generated. Audio was not added to the report or audit export.');
     await cleanupAudio();
     el('start').disabled = false;
     el('stop').disabled = true;
@@ -337,6 +408,7 @@ async function stopAnalysis() {
 el('start').addEventListener('click', startAnalysis);
 el('stop').addEventListener('click', stopAnalysis);
 el('download-report').addEventListener('click', downloadAuditReport);
+el('print-report').addEventListener('click', printReport);
 window.addEventListener('beforeunload', () => {
   stream?.getTracks().forEach(track => track.stop());
   closeSocket();
