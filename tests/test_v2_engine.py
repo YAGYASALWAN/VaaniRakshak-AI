@@ -55,6 +55,16 @@ class StreamingSessionTests(unittest.TestCase):
         self.assertEqual(emitted[0].threshold, 0.65)
         self.assertEqual(detector.calls[0][1], MODEL_SAMPLE_RATE)
         self.assertAlmostEqual(detector.calls[0][0], MODEL_SAMPLE_RATE * 4, delta=2)
+        self.assertIsNotNone(emitted[0].preprocessing_ms)
+        self.assertIsNotNone(emitted[0].inference_ms)
+        self.assertIsNotNone(emitted[0].total_analysis_ms)
+        self.assertGreaterEqual(emitted[0].preprocessing_ms, 0.0)
+        self.assertGreaterEqual(emitted[0].inference_ms, 0.0)
+        self.assertGreaterEqual(emitted[0].total_analysis_ms, emitted[0].preprocessing_ms)
+        summary = session.live_summary()
+        self.assertIsNotNone(summary["mean_preprocessing_ms"])
+        self.assertIsNotNone(summary["mean_inference_ms"])
+        self.assertIsNotNone(summary["mean_total_window_ms"])
 
     def test_uses_two_second_hop_for_overlapping_windows(self):
         sample_rate = 8_000
@@ -94,10 +104,16 @@ class StreamingSessionTests(unittest.TestCase):
         self.assertFalse(emitted[0].analyzed)
         self.assertEqual(emitted[0].quality.reason, "too_quiet")
         self.assertEqual(detector.calls, [])
+        self.assertIsNotNone(emitted[0].preprocessing_ms)
+        self.assertIsNone(emitted[0].inference_ms)
+        self.assertIsNotNone(emitted[0].total_analysis_ms)
         summary = session.live_summary()
         self.assertEqual(summary["segments_skipped"], 1)
         self.assertEqual(summary["segments_analyzed"], 0)
         self.assertFalse(summary["enough_evidence"])
+        self.assertIsNotNone(summary["mean_preprocessing_ms"])
+        self.assertIsNone(summary["mean_inference_ms"])
+        self.assertIsNotNone(summary["mean_total_window_ms"])
 
     def test_short_tail_does_not_fake_evidence(self):
         sample_rate = 8_000
