@@ -103,9 +103,6 @@ class ManifestAudioDataset(Dataset):
     def __getitem__(self, index):
         record = self.records[index]
         wave, rate = _read_audio(_resolve_audio_ref(record.audio_ref, self.manifest_dir))
-        # Python's built-in hash() is intentionally process-randomized. Derive a
-        # stable per-record/per-epoch seed instead so crops vary across epochs but
-        # remain reproducible across independent runs with the same global seed.
         material = f"{self.seed}:{self.epoch}:{record.record_id}".encode("utf-8")
         crop_seed = int.from_bytes(hashlib.blake2s(material, digest_size=8).digest(), "little")
         rng = random.Random(crop_seed)
@@ -124,8 +121,6 @@ def _balanced_sampler(dataset: ManifestAudioDataset, seed: int) -> WeightedRando
 def _set_backbone_trainable(model: WavLMAntiSpoof, trainable: bool) -> None:
     for parameter in model.backbone.parameters():
         parameter.requires_grad = trainable
-    # Keep the raw convolutional feature encoder frozen even when transformer
-    # layers are fine-tuned; this reduces memory/overfitting for the first V2 run.
     if hasattr(model.backbone, "freeze_feature_encoder"):
         model.backbone.freeze_feature_encoder()
 
@@ -178,7 +173,9 @@ def run(
     *,
     backbone_id: str = DEFAULT_BACKBONE,
     epochs: int = 8,
-    batch_size: int = 4,
+    batch_size: int = 2,
+    gradient_accumulation_steps: int = 4,
+    gradient_checkpointing: bool = True,
     device: str = "cuda",
     head_only_epochs: int = 1,
     backbone_lr: float = 1e-5,
@@ -191,8 +188,10 @@ def run(
         raise ValueError("CUDA requested but unavailable")
     if device not in {"cpu", "cuda"}:
         raise ValueError("device must be cpu or cuda")
-    if epochs < 1 or batch_size < 1:
-        raise ValueError("epochs and batch_size must be positive")
+    if epochs < 1 or batch_size < 1 or gradient_accumulation_steps < 1:
+        raise ValueError("epochs, batch_size and gradient_accumulation_steps must be positive")
+    if not 0 <= head_only_epochs < epochs + 1:
+        raise ValueError("head_only_epochs must be between 0 and epochs")
 
     random.seed(seed)
     np.random.seed(seed)
@@ -206,8 +205,14 @@ def run(
     records = load_jsonl(manifest)
     audit = audit_manifest(records)
     audit.raise_for_errors()
-    if not any(record.split == "train" for record in records) or not any(record.split == "dev" for record in records):
+    train_records = [record for record in records if record.split == "train"]
+    dev_records = [record for record in records if record.split == "dev"]
+    if not train_records or not dev_records:
         raise ValueError("Training requires both train and dev manifest splits")
+    if {record.label for record in train_records} != {"bonafide", "spoof"}:
+        raise ValueError("Training split must contain bonafide and spoof records")
+    if {record.label for record in dev_records} != {"bonafide", "spoof"}:
+        raise ValueError("Development split must contain bonafide and spoof records")
 
     train_data = ManifestAudioDataset(records, manifest.parent, "train", seed=seed)
     dev_data = ManifestAudioDataset(records, manifest.parent, "dev", seed=seed)
@@ -216,6 +221,13 @@ def run(
     dev_loader = DataLoader(dev_data, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=device == "cuda")
 
     model = WavLMAntiSpoof.from_pretrained(backbone_id).to(device)
+    if gradient_checkpointing:
+        enable = getattr(model.backbone, "gradient_checkpointing_enable", None)
+        if callable(enable):
+            enable()
+        else:
+            raise ValueError("Selected WavLM backbone does not support gradient checkpointing")
+
     optimizer = torch.optim.AdamW(
         _parameter_groups(model, backbone_lr, head_lr),
         weight_decay=weight_decay,
@@ -236,6 +248,9 @@ def run(
             "backbone_id": backbone_id,
             "epochs": epochs,
             "batch_size": batch_size,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
+            "effective_batch_size": batch_size * gradient_accumulation_steps,
+            "gradient_checkpointing": gradient_checkpointing,
             "head_only_epochs": head_only_epochs,
             "backbone_lr": backbone_lr,
             "head_lr": head_lr,
@@ -257,24 +272,30 @@ def run(
         started = time.monotonic()
         running_loss = 0.0
         seen = 0
+        optimizer.zero_grad(set_to_none=True)
+        loader_steps = len(train_loader)
 
-        for values, mask, target in train_loader:
+        for step, (values, mask, target) in enumerate(train_loader, 1):
             values = values.to(device, non_blocking=True)
             mask = mask.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
-            optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=device, enabled=device == "cuda"):
                 logits = model(values, attention_mask=mask)
-                loss = nn.functional.binary_cross_entropy_with_logits(logits, target)
-            if not torch.isfinite(loss):
+                raw_loss = nn.functional.binary_cross_entropy_with_logits(logits, target)
+                loss = raw_loss / gradient_accumulation_steps
+            if not torch.isfinite(raw_loss):
                 raise ValueError("Non-finite training loss")
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-            scaler.step(optimizer)
-            scaler.update()
-            running_loss += float(loss.item()) * len(target)
+            running_loss += float(raw_loss.item()) * len(target)
             seen += len(target)
+
+            should_step = step % gradient_accumulation_steps == 0 or step == loader_steps
+            if should_step:
+                scaler.unscale_(optimizer)
+                nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
 
         dev_loss, dev_labels, dev_scores = evaluate(model, dev_loader, device)
         dev_eer, dev_eer_threshold = eer(dev_labels, dev_scores)
@@ -339,7 +360,9 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--backbone", default=DEFAULT_BACKBONE)
     parser.add_argument("--epochs", type=int, default=8)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--gradient-accumulation", type=int, default=4)
+    parser.add_argument("--no-gradient-checkpointing", action="store_true")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--head-only-epochs", type=int, default=1)
     parser.add_argument("--backbone-lr", type=float, default=1e-5)
@@ -354,6 +377,8 @@ def main() -> None:
         backbone_id=args.backbone,
         epochs=args.epochs,
         batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation,
+        gradient_checkpointing=not args.no_gradient_checkpointing,
         device=args.device,
         head_only_epochs=args.head_only_epochs,
         backbone_lr=args.backbone_lr,
