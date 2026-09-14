@@ -4,10 +4,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import torch
 
 import vaanirakshak.v2_calibrate as calibrate_module
 from vaanirakshak.v2_detectors import CALIBRATION_METHOD, V2_CHECKPOINT_SCHEMA
+
+
+RATE = 16_000
 
 
 class AuditOK:
@@ -15,24 +19,6 @@ class AuditOK:
 
     def raise_for_errors(self):
         return None
-
-
-class TinyDevDataset:
-    def __init__(self, records, manifest_dir, split, *, seed=0):
-        self.records = [record for record in records if record.split == split]
-        self.epoch = 0
-
-    def set_epoch(self, epoch):
-        self.epoch = int(epoch)
-
-    def __len__(self):
-        return len(self.records)
-
-    def __getitem__(self, index):
-        record = self.records[index]
-        label = 1.0 if record.label == "spoof" else 0.0
-        value = 0.8 if label else -0.8
-        return torch.full((64,), value), torch.ones(64, dtype=torch.long), torch.tensor(label)
 
 
 class FakeDetector:
@@ -45,11 +31,18 @@ class FakeDetector:
 
 def fake_records():
     return [
-        SimpleNamespace(record_id="tr-real", split="train", label="bonafide"),
-        SimpleNamespace(record_id="tr-fake", split="train", label="spoof"),
-        SimpleNamespace(record_id="dev-real", split="dev", label="bonafide"),
-        SimpleNamespace(record_id="dev-fake", split="dev", label="spoof"),
+        SimpleNamespace(record_id="tr-real", split="train", label="bonafide", audio_ref="tr-real.wav"),
+        SimpleNamespace(record_id="tr-fake", split="train", label="spoof", audio_ref="tr-fake.wav"),
+        SimpleNamespace(record_id="dev-real", split="dev", label="bonafide", audio_ref="dev-real.wav"),
+        SimpleNamespace(record_id="dev-fake", split="dev", label="spoof", audio_ref="dev-fake.wav"),
     ]
+
+
+def fake_read(path):
+    value = 0.6 if "fake" in str(path) else -0.6
+    # Ten seconds creates several overlapping four-second windows, forcing the
+    # calibration command to exercise deterministic capped window selection.
+    return np.full(10 * RATE, value, dtype=np.float32)
 
 
 class V2CalibrationCommandTests(unittest.TestCase):
@@ -77,11 +70,19 @@ class V2CalibrationCommandTests(unittest.TestCase):
             patch.object(calibrate_module, "load_jsonl", return_value=fake_records()),
             patch.object(calibrate_module, "audit_manifest", return_value=AuditOK()),
             patch.object(calibrate_module, "manifest_fingerprint", return_value=fingerprint),
-            patch.object(calibrate_module, "ManifestAudioDataset", TinyDevDataset),
             patch.object(calibrate_module, "CheckpointDetector", FakeDetector),
+            patch.object(calibrate_module, "_read_16khz", side_effect=fake_read),
         ]
 
-    def test_writes_calibrated_checkpoint_without_overwriting_source(self):
+    def test_window_selector_spreads_capped_windows_across_recording(self):
+        wave = np.arange(10 * RATE, dtype=np.float32)
+        all_windows = calibrate_module._windows(wave)
+        selected = calibrate_module._select_calibration_windows(wave, maximum=4)
+        self.assertEqual(len(selected), 4)
+        np.testing.assert_array_equal(selected[0], all_windows[0])
+        np.testing.assert_array_equal(selected[-1], all_windows[-1])
+
+    def test_writes_recording_balanced_calibrated_checkpoint_without_overwriting_source(self):
         with tempfile.TemporaryDirectory() as root:
             manifest = Path(root) / "manifest.jsonl"
             manifest.write_text("fixture\n", encoding="utf-8")
@@ -101,17 +102,24 @@ class V2CalibrationCommandTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertTrue(output.with_suffix(".pt.calibration.json").is_file())
             state = torch.load(output, map_location="cpu", weights_only=True)
+            metadata = state["calibration"]
             self.assertTrue(state["calibrated_probability"])
-            self.assertEqual(state["calibration"]["method"], CALIBRATION_METHOD)
-            self.assertEqual(state["calibration"]["fit_split"], "dev")
-            self.assertFalse(state["calibration"]["test_data_used"])
-            self.assertTrue(state["calibration"]["decision_preserving_threshold_transform"])
+            self.assertEqual(metadata["method"], CALIBRATION_METHOD)
+            self.assertEqual(metadata["fit_split"], "dev")
+            self.assertEqual(metadata["calibration_unit"], calibrate_module.CALIBRATION_UNIT)
+            self.assertTrue(metadata["recording_balanced_fit"])
+            self.assertEqual(metadata["development_recordings"], 2)
+            self.assertEqual(metadata["calibration_windows"], 8)
+            self.assertEqual(metadata["min_windows_per_recording"], 4)
+            self.assertEqual(metadata["max_windows_observed_per_recording"], 4)
+            self.assertFalse(metadata["test_data_used"])
+            self.assertTrue(metadata["decision_preserving_threshold_transform"])
             self.assertNotEqual(state["threshold"], 0.65)
-            self.assertEqual(report["calibration"]["records"], 2)
             self.assertLessEqual(
-                report["calibration"]["metrics_after"]["nll"],
-                report["calibration"]["metrics_before"]["nll"] + 1e-8,
+                metadata["recording_balanced_nll_after"],
+                metadata["recording_balanced_nll_before"] + 1e-8,
             )
+            self.assertEqual(report["calibration"]["calibration_windows"], 8)
 
     def test_manifest_fingerprint_must_match_training_checkpoint(self):
         with tempfile.TemporaryDirectory() as root:
@@ -154,6 +162,20 @@ class V2CalibrationCommandTests(unittest.TestCase):
             source = self.write_checkpoint(root)
             with self.assertRaisesRegex(ValueError, "new checkpoint"):
                 calibrate_module.calibrate(manifest, source, source)
+
+    def test_invalid_window_cap_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            manifest = Path(root) / "manifest.jsonl"
+            manifest.write_text("fixture\n", encoding="utf-8")
+            source = self.write_checkpoint(root)
+            output = Path(root) / "calibrated.pt"
+            with self.assertRaisesRegex(ValueError, "max_windows_per_recording"):
+                calibrate_module.calibrate(
+                    manifest,
+                    source,
+                    output,
+                    max_windows_per_recording=0,
+                )
 
 
 if __name__ == "__main__":
