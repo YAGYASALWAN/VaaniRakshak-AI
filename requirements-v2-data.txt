@@ -1,0 +1,6 @@
+# VaaniRakshak V2 raw-audio dataset preparation dependencies
+# Keep the installed torch/torchaudio pair compatible with your CUDA environment.
+-r requirements-v2.txt
+pyarrow>=18,<26
+huggingface-hub>=0.34,<2
+filelock>=3.16,<4
