@@ -79,6 +79,8 @@ async def analyze_stream(websocket: WebSocket) -> None:
     try:
         while True:
             message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                return
 
             if message.get("text") is not None:
                 try:
