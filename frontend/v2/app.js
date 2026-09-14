@@ -36,46 +36,66 @@ function resetLiveUI() {
   el('risk-label').textContent = 'No evidence yet';
   el('risk-fill').style.width = '0%';
   el('duration').textContent = '0.0 s';
+  el('usable-speech').textContent = '0.0 s';
+  el('windows-seen').textContent = '0';
   el('segments').textContent = '0';
+  el('skipped').textContent = '0';
   el('suspicious').textContent = '0';
-  el('timeline').innerHTML = '<div class="empty">No segments yet.</div>';
+  el('timeline').innerHTML = '<div class="empty">No windows yet.</div>';
   el('final-card').hidden = true;
 }
 
 function renderSummary(summary) {
-  el('risk-score').textContent = summary.segments_analyzed ? String(summary.risk_score) : '--';
+  const showRisk = Boolean(summary.enough_evidence);
+  el('risk-score').textContent = showRisk ? String(summary.risk_score) : '--';
   el('risk-label').textContent = summary.risk_label;
-  el('risk-fill').style.width = `${summary.risk_score}%`;
+  el('risk-fill').style.width = showRisk ? `${summary.risk_score}%` : '0%';
   el('duration').textContent = `${summary.duration_seconds.toFixed(1)} s`;
+  el('usable-speech').textContent = `${summary.usable_speech_seconds.toFixed(1)} s`;
+  el('windows-seen').textContent = String(summary.windows_seen);
   el('segments').textContent = String(summary.segments_analyzed);
+  el('skipped').textContent = String(summary.segments_skipped);
   el('suspicious').textContent = String(summary.suspicious_segments);
+  if (summary.window_seconds && summary.hop_seconds) {
+    el('windowing').textContent = `${summary.window_seconds.toFixed(0)}s / ${summary.hop_seconds.toFixed(0)}s`;
+  }
 }
 
 function addSegment(segment) {
   const timeline = el('timeline');
   timeline.querySelector('.empty')?.remove();
   const block = document.createElement('div');
-  block.className = segment.synthetic_score >= 0.65 ? 'segment high' : segment.synthetic_score >= 0.5 ? 'segment mid' : 'segment low';
-  block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · score ${segment.synthetic_score.toFixed(3)}`;
+
+  if (!segment.analyzed || segment.synthetic_score == null) {
+    block.className = 'segment skipped';
+    const reason = segment.quality?.reason || 'quality_gate';
+    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · skipped (${reason})`;
+  } else {
+    block.className = segment.synthetic_score >= 0.65 ? 'segment high' : segment.synthetic_score >= 0.5 ? 'segment mid' : 'segment low';
+    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · score ${segment.synthetic_score.toFixed(3)} · speech ${(segment.quality.speech_ratio * 100).toFixed(0)}%`;
+  }
   block.setAttribute('aria-label', block.title);
   timeline.appendChild(block);
 }
 
 function renderFinal(result) {
   renderSummary(result);
-  el('final-score').textContent = `${result.risk_score}/100`;
+  el('final-score').textContent = result.enough_evidence ? `${result.risk_score}/100` : '--';
   el('final-risk').textContent = result.risk_label;
   el('final-verdict').textContent = result.verdict;
-  el('final-copy').textContent = result.segments_analyzed
-    ? `${result.suspicious_segments} of ${result.segments_analyzed} analyzed segments crossed the current suspicious-score threshold.`
-    : 'Not enough audio was available to produce a call-level result.';
+
+  if (!result.enough_evidence) {
+    el('final-copy').textContent = `Only ${result.usable_speech_seconds.toFixed(1)} seconds of usable speech across ${result.segments_analyzed} analyzed windows were available. VaaniRakshak refused to force a call-level verdict.`;
+  } else {
+    el('final-copy').textContent = `${result.suspicious_segments} of ${result.segments_analyzed} analyzed windows crossed the current suspicious-score threshold; ${result.segments_skipped} windows were excluded by the quality gate.`;
+  }
   el('final-notice').textContent = result.notice;
 
   const regions = el('regions');
   regions.innerHTML = '';
   if (result.regions?.length) {
     const heading = document.createElement('h3');
-    heading.textContent = 'Highest-scoring regions';
+    heading.textContent = 'Highest-scoring analyzed regions';
     regions.appendChild(heading);
     for (const region of result.regions) {
       const row = document.createElement('div');
@@ -105,17 +125,6 @@ function closeSocket() {
   ws = null;
 }
 
-async function failActiveSession(text) {
-  setMessage(text, true);
-  setConnection('Stream error');
-  el('call-state').textContent = 'Session stopped';
-  await cleanupAudio();
-  closeSocket();
-  stopping = false;
-  el('start').disabled = false;
-  el('stop').disabled = true;
-}
-
 async function loadStatus() {
   try {
     const response = await fetch('/api/v2/status', { cache: 'no-store' });
@@ -124,6 +133,7 @@ async function loadStatus() {
     backendReady = status.ready;
     el('mode').textContent = status.analysis_mode.toUpperCase();
     el('notice').textContent = status.notice;
+    if (status.window_seconds && status.hop_seconds) el('windowing').textContent = `${status.window_seconds}s / ${status.hop_seconds}s`;
     el('start').disabled = !backendReady;
     setConnection('Backend ready', true);
     setMessage('Ready. Start a microphone analysis session.');
@@ -133,6 +143,42 @@ async function loadStatus() {
     el('mode').textContent = 'Offline';
     setConnection('Backend offline');
     setMessage(error.message, true);
+  }
+}
+
+async function handleStreamMessage(event) {
+  const data = JSON.parse(event.data);
+  if (data.type === 'connected') return;
+  if (data.type === 'started') {
+    el('call-state').textContent = 'Call in progress';
+    el('stop').disabled = false;
+    setConnection('Streaming', true);
+    setMessage('Microphone audio is streaming to the local V2 backend.');
+    el('notice').textContent = data.notice;
+    startedAt = performance.now();
+    timerId = setInterval(() => {
+      el('timer').textContent = fmtTime((performance.now() - startedAt) / 1000);
+    }, 250);
+    return;
+  }
+  if (data.type === 'segment') {
+    addSegment(data.segment);
+    renderSummary(data.summary);
+    return;
+  }
+  if (data.type === 'final') {
+    renderFinal(data);
+    el('call-state').textContent = 'Analysis complete';
+    setConnection('Complete', true);
+    setMessage('Final call report generated.');
+    await cleanupAudio();
+    el('start').disabled = false;
+    el('stop').disabled = true;
+    stopping = false;
+    return;
+  }
+  if (data.type === 'error') {
+    setMessage(data.message || 'Streaming analysis error.', true);
   }
 }
 
@@ -154,53 +200,14 @@ async function startAnalysis() {
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${scheme}://${location.host}/ws/v2/analyze`);
     ws.binaryType = 'arraybuffer';
-
-    ws.onmessage = async event => {
-      let data;
-      try {
-        data = JSON.parse(event.data);
-      } catch {
-        await failActiveSession('Backend returned an invalid streaming message.');
-        return;
-      }
-      if (data.type === 'connected') return;
-      if (data.type === 'started') {
-        el('call-state').textContent = 'Call in progress';
-        el('stop').disabled = false;
-        setConnection('Streaming', true);
-        setMessage('Microphone audio is streaming to the local V2 backend.');
-        el('notice').textContent = data.notice;
-        startedAt = performance.now();
-        timerId = setInterval(() => {
-          el('timer').textContent = fmtTime((performance.now() - startedAt) / 1000);
-        }, 250);
-        return;
-      }
-      if (data.type === 'segment') {
-        addSegment(data.segment);
-        renderSummary(data.summary);
-        return;
-      }
-      if (data.type === 'final') {
-        renderFinal(data);
-        el('call-state').textContent = 'Analysis complete';
-        setConnection('Complete', true);
-        setMessage('Final call report generated.');
-        await cleanupAudio();
-        el('start').disabled = false;
-        el('stop').disabled = true;
-        stopping = false;
-        return;
-      }
-      if (data.type === 'error') {
-        await failActiveSession(data.message || 'Streaming analysis error.');
-      }
-    };
-
+    ws.onmessage = event => { handleStreamMessage(event).catch(error => setMessage(error.message, true)); };
     ws.onerror = () => setMessage('WebSocket connection error. Check the backend terminal.', true);
     ws.onclose = async event => {
       if (!stopping && el('call-state').textContent === 'Call in progress' && event.code !== 1000) {
-        await failActiveSession('Streaming connection closed unexpectedly.');
+        setMessage('Streaming connection closed unexpectedly.', true);
+        await cleanupAudio();
+        el('start').disabled = false;
+        el('stop').disabled = true;
       }
     };
 
