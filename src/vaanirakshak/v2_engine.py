@@ -54,12 +54,7 @@ class Detector(Protocol):
     notice: str
 
     def score(self, samples: np.ndarray, sample_rate: int) -> float:
-        """Return a finite synthetic-speech score in [0, 1].
-
-        `samples` are mono float32 samples normalized to [-1, 1] at 16 kHz.
-        The score is compared with the detector's own validated operating
-        threshold; the product layer must not invent a model threshold.
-        """
+        """Return a finite synthetic-speech score in [0, 1]."""
 
 
 class MockDetector:
@@ -108,6 +103,8 @@ class WindowResult:
     quality: AudioQuality
     threshold: float
     inference_ms: float | None = None
+    preprocessing_ms: float | None = None
+    total_analysis_ms: float | None = None
 
     @property
     def analyzed(self) -> bool:
@@ -132,6 +129,8 @@ class WindowResult:
             "suspicious": self.suspicious,
             "quality": self.quality.as_dict(),
             "inference_ms": None if self.inference_ms is None else round(self.inference_ms, 3),
+            "preprocessing_ms": None if self.preprocessing_ms is None else round(self.preprocessing_ms, 3),
+            "total_analysis_ms": None if self.total_analysis_ms is None else round(self.total_analysis_ms, 3),
         }
 
 
@@ -189,21 +188,25 @@ class StreamingSession:
         return emitted
 
     def _analyze_window(self, samples: list[int], start_sample: int) -> WindowResult:
+        total_started = time.perf_counter()
+        preprocessing_started = total_started
         model_wave, quality = prepare_model_window(
             samples,
             self.sample_rate,
             speech_gate=self.speech_gate,
         )
+        preprocessing_ms = (time.perf_counter() - preprocessing_started) * 1000.0
         score: float | None = None
         inference_ms: float | None = None
 
         if quality.usable:
-            started = time.perf_counter()
+            inference_started = time.perf_counter()
             score = float(self.detector.score(model_wave, MODEL_SAMPLE_RATE))
-            inference_ms = (time.perf_counter() - started) * 1000.0
+            inference_ms = (time.perf_counter() - inference_started) * 1000.0
             if not math.isfinite(score) or not 0.0 <= score <= 1.0:
                 raise ValueError("Detector returned an invalid score")
 
+        total_analysis_ms = (time.perf_counter() - total_started) * 1000.0
         result = WindowResult(
             index=len(self.windows),
             start_seconds=start_sample / self.sample_rate,
@@ -212,6 +215,8 @@ class StreamingSession:
             quality=quality,
             threshold=float(self.detector.threshold),
             inference_ms=inference_ms,
+            preprocessing_ms=preprocessing_ms,
+            total_analysis_ms=total_analysis_ms,
         )
         self.windows.append(result)
         return result
@@ -299,6 +304,8 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
     top_regions = sorted(analyzed, key=lambda item: float(item.synthetic_score), reverse=True)[:5]
     top_regions.sort(key=lambda item: item.start_seconds)
     inference_values = [item.inference_ms for item in analyzed if item.inference_ms is not None]
+    preprocessing_values = [item.preprocessing_ms for item in items if item.preprocessing_ms is not None]
+    total_values = [item.total_analysis_ms for item in items if item.total_analysis_ms is not None]
     gate_names = sorted({item.quality.speech_gate for item in items})
 
     detector_notice = str(getattr(detector, "notice", "Risk is an aggregated security signal and is not proof of authenticity."))
@@ -327,7 +334,9 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
         "window_seconds": WINDOW_SECONDS,
         "hop_seconds": HOP_SECONDS,
         "model_sample_rate": MODEL_SAMPLE_RATE,
+        "mean_preprocessing_ms": round(statistics.fmean(preprocessing_values), 3) if preprocessing_values else None,
         "mean_inference_ms": round(statistics.fmean(inference_values), 3) if inference_values else None,
+        "mean_total_window_ms": round(statistics.fmean(total_values), 3) if total_values else None,
         "regions": [region.as_dict() for region in top_regions],
         "notice": detector_notice + " Audio quality gating and 16 kHz normalization are active.",
     }
