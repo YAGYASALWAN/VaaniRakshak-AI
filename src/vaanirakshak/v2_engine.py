@@ -23,6 +23,7 @@ from vaanirakshak.v2_audio import AudioQuality, MODEL_SAMPLE_RATE, prepare_model
 WINDOW_SECONDS = 4.0
 HOP_SECONDS = 2.0
 MIN_FINAL_WINDOW_SECONDS = 2.0
+MIN_NEW_TAIL_SECONDS = 0.5
 SUSPICIOUS_THRESHOLD = 0.65
 MIN_ANALYZED_WINDOWS = 2
 MIN_USABLE_SPEECH_SECONDS = 4.0
@@ -186,7 +187,15 @@ class StreamingSession:
         self.finalized = True
 
         min_tail = int(self.sample_rate * MIN_FINAL_WINDOW_SECONDS)
-        if len(self.buffer) >= min_tail:
+        min_new = int(self.sample_rate * MIN_NEW_TAIL_SECONDS)
+        tail_end_sample = self.buffer_start_sample + len(self.buffer)
+        last_end_sample = int(round(self.windows[-1].end_seconds * self.sample_rate)) if self.windows else 0
+        new_tail_samples = tail_end_sample - last_end_sample if self.windows else len(self.buffer)
+
+        # With overlapping windows, the retained buffer can be entirely contained in
+        # the last full window. Only infer on the tail if it actually includes new
+        # call audio; otherwise finalization would duplicate evidence.
+        if len(self.buffer) >= min_tail and new_tail_samples >= min_new:
             self._analyze_window(list(self.buffer), self.buffer_start_sample)
         self.buffer = array("h")
         return aggregate_call(self.windows, self.total_samples / self.sample_rate, self.detector)
