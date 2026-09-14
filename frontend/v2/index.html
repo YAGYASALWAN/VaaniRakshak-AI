@@ -21,7 +21,7 @@
     <section class="hero">
       <p class="eyebrow">CALL SECURITY ASSISTANT</p>
       <h1>Analyze the call, not just a file.</h1>
-      <p class="lede">V2 streams microphone audio, quality-gates speech, analyzes overlapping windows and accumulates evidence into a call-level security assessment.</p>
+      <p class="lede">V2 streams microphone audio, speech-gates it, analyzes overlapping windows and accumulates evidence into a call-level security assessment.</p>
     </section>
 
     <section class="grid">
@@ -45,6 +45,7 @@
           <div><span>Quality-skipped</span><strong id="skipped">0</strong></div>
           <div><span>Suspicious segments</span><strong id="suspicious">0</strong></div>
           <div><span>Window / hop</span><strong id="windowing">4s / 2s</strong></div>
+          <div><span>Speech gate</span><strong id="speech-gate">Checking</strong></div>
           <div><span>Model mode</span><strong id="mode">Checking</strong></div>
         </div>
 
@@ -59,7 +60,7 @@
       <aside class="card evidence-card">
         <p class="eyebrow">EVIDENCE TIMELINE</p>
         <h2>Window history</h2>
-        <p class="small">Each block is one overlapping audio window. Gray windows were rejected by the quality/speech gate and were not sent to the detector.</p>
+        <p class="small">Each block is one overlapping audio window. Gray windows were rejected by the active speech/quality gate and were not sent to the detector.</p>
         <div id="timeline" class="timeline" aria-label="Analysis timeline">
           <div class="empty">No windows yet.</div>
         </div>
