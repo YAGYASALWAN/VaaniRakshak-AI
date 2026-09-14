@@ -4,7 +4,7 @@ This document is the executable path from raw data to the live VaaniRakshak V2 p
 
 V2 is deliberately product-first:
 
-`microphone -> streaming audio -> quality gate -> overlapping windows -> detector -> temporal evidence -> risk engine -> final report`
+`microphone -> streaming audio -> WebRTC speech gate -> quality gate -> overlapping windows -> detector -> temporal evidence -> risk engine -> final report`
 
 The detector is replaceable. A model does not become the V2 product detector merely because it trains successfully.
 
@@ -31,7 +31,7 @@ Keep your existing CUDA-compatible PyTorch/torchaudio pair if it is already work
 
 ## 1. Product-only smoke test
 
-No trained model is required for this step. The server deliberately uses the mock detector when no checkpoint is configured.
+No trained model is required for this step. The server deliberately uses the mock detector when no checkpoint is configured, but the live speech gate is real WebRTC VAD by default.
 
 ```powershell
 python -m vaanirakshak.v2_server
@@ -41,7 +41,26 @@ Open:
 
 `http://127.0.0.1:8766`
 
-Allow microphone access and speak for at least 10-20 seconds. This verifies the product path only. MOCK scores are not authenticity evidence.
+Allow microphone access and speak for at least 10-20 seconds. The dashboard should report `webrtc-vad-m2` as the active speech gate. This verifies the product path only. MOCK detector scores are not authenticity evidence.
+
+The WebRTC gate is independently configurable:
+
+```powershell
+$env:VAANIRAKSHAK_V2_VAD = "webrtc"
+$env:VAANIRAKSHAK_V2_VAD_AGGRESSIVENESS = "2"
+python -m vaanirakshak.v2_server
+```
+
+Aggressiveness may be 0, 1, 2, or 3. Higher modes are more aggressive about rejecting non-speech.
+
+The old energy gate is retained only as an explicit fallback/debug path:
+
+```powershell
+$env:VAANIRAKSHAK_V2_VAD = "energy"
+python -m vaanirakshak.v2_server
+```
+
+A bad VAD configuration is treated as a visible configuration error; the server does not silently fall back to another gate.
 
 ## 2. Prepare the primary SEA-Spoof raw-audio corpus
 
@@ -339,6 +358,8 @@ PowerShell:
 ```powershell
 $env:VAANIRAKSHAK_V2_CHECKPOINT = "models/v2_wavlm_sea/best.pt"
 $env:VAANIRAKSHAK_V2_DEVICE = "cuda"
+$env:VAANIRAKSHAK_V2_VAD = "webrtc"
+$env:VAANIRAKSHAK_V2_VAD_AGGRESSIVENESS = "2"
 python -m vaanirakshak.v2_server
 ```
 
@@ -346,9 +367,9 @@ Open:
 
 `http://127.0.0.1:8766`
 
-The status panel should now report a trained detector rather than MOCK mode.
+The status panel should now report a trained detector and `webrtc-vad-m2` rather than MOCK/energy mode.
 
-If checkpoint loading fails, the V2 server deliberately enters a configuration-error state. It does **not** silently substitute the mock detector.
+If checkpoint or speech-gate loading fails, the V2 server deliberately enters a configuration-error state. It does **not** silently substitute the mock detector or another speech gate.
 
 ## 12. Legacy V1 checkpoint integration (debug only)
 
@@ -381,7 +402,8 @@ A checkpoint should not be promoted to the SIH-facing detector until we have, at
 
 ## Current limitations
 
-- The live product's speech gate is currently an energy-based gate, not a production neural VAD.
+- WebRTC VAD is now the default live speech gate, but VAD only identifies likely speech/non-speech; it is not evidence that speech is human or synthetic.
+- The energy-v1 gate remains available only for fallback/debugging.
 - The call-level risk formula is a transparent product heuristic, not a calibrated probability model.
 - WavLM V2 code and checkpoint plumbing exist, but model quality is unknown until real training/evaluation runs are completed.
 - Detector scores are explicitly marked uncalibrated unless a future checkpoint provides validated calibration.
