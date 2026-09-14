@@ -40,6 +40,21 @@ function renderSpeechGate(value) {
   el('speech-gate').textContent = Array.isArray(value) ? value.join(', ') : String(value);
 }
 
+function renderRealtimeBudget(summary) {
+  const budget = summary?.realtime_budget_ms;
+  const observed = summary?.observed_mean_within_hop_budget;
+  const margin = summary?.realtime_margin_ms;
+  if (observed === true && Number.isFinite(margin)) {
+    el('realtime-status').textContent = `Within by ${margin.toFixed(0)} ms`;
+  } else if (observed === false && Number.isFinite(margin)) {
+    el('realtime-status').textContent = `Over by ${Math.abs(margin).toFixed(0)} ms`;
+  } else if (Number.isFinite(budget)) {
+    el('realtime-status').textContent = `${budget.toFixed(0)} ms budget`;
+  } else {
+    el('realtime-status').textContent = '--';
+  }
+}
+
 function resetLiveUI() {
   evidenceWindows = [];
   auditReport = null;
@@ -58,6 +73,7 @@ function resetLiveUI() {
   el('preprocess-latency').textContent = '--';
   el('inference-latency').textContent = '--';
   el('window-latency').textContent = '--';
+  el('realtime-status').textContent = '--';
   el('timeline').innerHTML = '<div class="empty">No windows yet.</div>';
   el('final-card').hidden = true;
 }
@@ -76,6 +92,7 @@ function renderSummary(summary) {
   el('preprocess-latency').textContent = fmtLatency(summary.mean_preprocessing_ms);
   el('inference-latency').textContent = fmtLatency(summary.mean_inference_ms);
   el('window-latency').textContent = fmtLatency(summary.mean_total_window_ms);
+  renderRealtimeBudget(summary);
   renderSpeechGate(summary.speech_gate);
   if (summary.window_seconds && summary.hop_seconds) {
     el('windowing').textContent = `${summary.window_seconds.toFixed(0)}s / ${summary.hop_seconds.toFixed(0)}s`;
@@ -190,6 +207,7 @@ async function loadStatus() {
     backendReady = status.ready;
     el('mode').textContent = status.analysis_mode.toUpperCase();
     renderSpeechGate(status.quality_gate);
+    renderRealtimeBudget(status);
     el('notice').textContent = `${status.notice} Detector threshold: ${status.threshold.toFixed(3)}. Scores are${status.calibrated_probability ? '' : ' not'} calibrated probabilities.`;
     if (status.window_seconds && status.hop_seconds) el('windowing').textContent = `${status.window_seconds}s / ${status.hop_seconds}s`;
     el('start').disabled = !backendReady;
@@ -200,6 +218,7 @@ async function loadStatus() {
     el('start').disabled = true;
     el('mode').textContent = 'Offline';
     el('speech-gate').textContent = 'Unavailable';
+    el('realtime-status').textContent = 'Unavailable';
     setConnection('Backend offline');
     setMessage(error.message, true);
   }
@@ -209,12 +228,14 @@ async function handleStreamMessage(event) {
   const data = JSON.parse(event.data);
   if (data.type === 'connected') {
     renderSpeechGate(data.speech_gate);
+    renderRealtimeBudget(data);
     return;
   }
   if (data.type === 'started') {
     el('call-state').textContent = 'Call in progress';
     el('stop').disabled = false;
     renderSpeechGate(data.speech_gate);
+    renderRealtimeBudget(data);
     setConnection('Streaming', true);
     setMessage(`Microphone audio is streaming to ${data.model || 'the V2 detector'}.`);
     el('notice').textContent = data.notice;
