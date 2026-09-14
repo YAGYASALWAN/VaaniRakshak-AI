@@ -6,6 +6,7 @@ import soundfile as sf
 
 from vaanirakshak.v2_prepare_sea import (
     _canonical_flac,
+    _evaluation_first,
     _generator,
     _source_utterance,
     _speaker,
@@ -50,6 +51,17 @@ class V2SEAPreparationTests(unittest.TestCase):
         row = {"speaker_id": "spk-7", "speaker_or_voice": "fallback"}
         self.assertEqual(_speaker(row, "bonafide"), "SEA:human:spk-7")
         self.assertEqual(_speaker(row, "spoof"), "SEA:voice:spk-7")
+
+    def test_materialization_orders_evaluation_before_training(self):
+        groups = [
+            {"split": "train", "path": "z", "row_group": 0},
+            {"split": "validation", "path": "b", "row_group": 0},
+            {"split": "evaluation", "path": "c", "row_group": 1},
+            {"split": "evaluation", "path": "a", "row_group": 0},
+        ]
+        ordered = _evaluation_first(groups)
+        self.assertEqual([group["split"] for group in ordered], ["evaluation", "evaluation", "validation", "train"])
+        self.assertEqual([group["path"] for group in ordered[:2]], ["a", "c"])
 
 
 if __name__ == "__main__":
