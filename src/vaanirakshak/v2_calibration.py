@@ -32,6 +32,20 @@ def _arrays(labels: Iterable[int], probabilities: Iterable[float]) -> tuple[np.n
     return y, p
 
 
+def _sample_weights(sample_weights: Iterable[float] | None, count: int) -> np.ndarray:
+    if sample_weights is None:
+        return np.full(count, 1.0 / count, dtype=np.float64)
+    weights = np.asarray(list(sample_weights), dtype=np.float64)
+    if weights.ndim != 1 or len(weights) != count:
+        raise ValueError("sample_weights must match the number of calibration examples")
+    if not np.isfinite(weights).all() or np.any(weights < 0.0):
+        raise ValueError("sample_weights must be finite and non-negative")
+    total = float(weights.sum())
+    if total <= 0.0:
+        raise ValueError("sample_weights must contain positive total weight")
+    return weights / total
+
+
 def probability_to_logit(probability):
     p = np.asarray(probability, dtype=np.float64)
     clipped = np.clip(p, EPSILON, 1.0 - EPSILON)
@@ -40,7 +54,6 @@ def probability_to_logit(probability):
 
 def logit_to_probability(logit):
     z = np.asarray(logit, dtype=np.float64)
-    # Stable sigmoid without relying on large positive exponentials.
     result = np.empty_like(z, dtype=np.float64)
     positive = z >= 0
     result[positive] = 1.0 / (1.0 + np.exp(-z[positive]))
@@ -69,10 +82,17 @@ def transform_threshold(threshold: float, temperature: float) -> float:
     return calibrated
 
 
-def binary_nll(labels: Iterable[int], probabilities: Iterable[float]) -> float:
+def binary_nll(
+    labels: Iterable[int],
+    probabilities: Iterable[float],
+    *,
+    sample_weights: Iterable[float] | None = None,
+) -> float:
     y, p = _arrays(labels, probabilities)
+    weights = _sample_weights(sample_weights, len(y))
     p = np.clip(p, EPSILON, 1.0 - EPSILON)
-    return float(-np.mean(y * np.log(p) + (1.0 - y) * np.log1p(-p)))
+    losses = -(y * np.log(p) + (1.0 - y) * np.log1p(-p))
+    return float(np.sum(weights * losses))
 
 
 def brier_score(labels: Iterable[int], probabilities: Iterable[float]) -> float:
@@ -108,15 +128,22 @@ def expected_calibration_error(
     return float(ece)
 
 
-def fit_temperature(labels: Iterable[int], probabilities: Iterable[float]) -> float:
+def fit_temperature(
+    labels: Iterable[int],
+    probabilities: Iterable[float],
+    *,
+    sample_weights: Iterable[float] | None = None,
+) -> float:
     y, p = _arrays(labels, probabilities)
+    weights = _sample_weights(sample_weights, len(y))
     logits = probability_to_logit(p)
 
     def objective(log_temperature: float) -> float:
         temperature = math.exp(float(log_temperature))
         calibrated = logit_to_probability(logits / temperature)
         clipped = np.clip(calibrated, EPSILON, 1.0 - EPSILON)
-        return float(-np.mean(y * np.log(clipped) + (1.0 - y) * np.log1p(-clipped)))
+        losses = -(y * np.log(clipped) + (1.0 - y) * np.log1p(-clipped))
+        return float(np.sum(weights * losses))
 
     result = minimize_scalar(objective, bounds=(-4.0, 4.0), method="bounded", options={"xatol": 1e-6})
     if not result.success or not math.isfinite(float(result.x)):
