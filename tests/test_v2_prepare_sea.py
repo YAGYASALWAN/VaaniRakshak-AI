@@ -1,15 +1,20 @@
 import io
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import soundfile as sf
 
+from vaanirakshak.sea_transfer import REPOSITORY, REVISION
 from vaanirakshak.v2_prepare_sea import (
     _canonical_flac,
     _evaluation_first,
     _generator,
     _source_utterance,
     _speaker,
+    prepare,
 )
 
 
@@ -62,6 +67,48 @@ class V2SEAPreparationTests(unittest.TestCase):
         ordered = _evaluation_first(groups)
         self.assertEqual([group["split"] for group in ordered], ["evaluation", "evaluation", "validation", "train"])
         self.assertEqual([group["path"] for group in ordered[:2]], ["a", "c"])
+
+    def test_failed_row_group_keeps_retry_scope_for_next_run(self):
+        class FakeClient:
+            used = 0
+
+            def __init__(self):
+                self.events = []
+
+            def begin_scope(self, scope_id):
+                self.events.append(("begin", scope_id))
+
+            def end_scope(self, scope_id, *, clear):
+                self.events.append(("end", scope_id, clear))
+
+            def clear_scope(self, scope_id):
+                self.events.append(("clear", scope_id))
+
+        group = {
+            "unit": "unit-a",
+            "path": "data/train/fake.parquet",
+            "split": "train",
+            "row_group": 0,
+            "english_rows": 1,
+            "labels": {"bonafide": 1},
+            "estimated_bytes": 1024,
+        }
+        source = {
+            "repository": REPOSITORY,
+            "revision": REVISION,
+            "files": [{"path": group["path"], "size": 4096, "split": "train"}],
+        }
+        client = FakeClient()
+        plan = {"groups": [group]}
+
+        with tempfile.TemporaryDirectory() as folder, patch(
+            "vaanirakshak.v2_prepare_sea._scan_groups", return_value=plan
+        ), patch("pyarrow.parquet.ParquetFile", side_effect=RuntimeError("simulated row-group crash")):
+            with self.assertRaisesRegex(RuntimeError, "simulated row-group crash"):
+                prepare(Path(folder), source, client, budget=1_000_000_000)
+
+        scope = "v2-sea-row-group:unit-a"
+        self.assertEqual(client.events, [("begin", scope), ("end", scope, False)])
 
 
 if __name__ == "__main__":
