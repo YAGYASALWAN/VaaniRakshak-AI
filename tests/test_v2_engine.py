@@ -8,10 +8,13 @@ from vaanirakshak.v2_engine import StreamingSession, aggregate_call, WindowResul
 class FixedDetector:
     name = "fixed-test-detector"
     mode = "test"
+    calibrated_probability = False
+    notice = "test detector"
 
-    def __init__(self, scores):
+    def __init__(self, scores, threshold=0.65):
         self.scores = iter(scores)
         self.calls = []
+        self.threshold = threshold
 
     def score(self, samples, sample_rate):
         self.calls.append((len(samples), sample_rate))
@@ -33,6 +36,10 @@ def quality(*, speech_ratio=1.0, usable=True, reason=None):
     )
 
 
+def window(index, start, end, score, q, threshold=0.65):
+    return WindowResult(index, start, end, score, q, threshold)
+
+
 class StreamingSessionTests(unittest.TestCase):
     def test_emits_four_second_window_normalized_to_16khz(self):
         sample_rate = 48_000
@@ -45,6 +52,7 @@ class StreamingSessionTests(unittest.TestCase):
         self.assertEqual(emitted[0].start_seconds, 0.0)
         self.assertEqual(emitted[0].end_seconds, 4.0)
         self.assertAlmostEqual(emitted[0].synthetic_score, 0.8)
+        self.assertEqual(emitted[0].threshold, 0.65)
         self.assertEqual(detector.calls[0][1], MODEL_SAMPLE_RATE)
         self.assertAlmostEqual(detector.calls[0][0], MODEL_SAMPLE_RATE * 4, delta=2)
 
@@ -110,15 +118,25 @@ class StreamingSessionTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             session.ingest_pcm16le(pcm16([500] * 100))
 
+    def test_detector_threshold_is_used_instead_of_product_constant(self):
+        sample_rate = 16_000
+        detector = FixedDetector([0.72], threshold=0.80)
+        session = StreamingSession(detector, sample_rate=sample_rate)
+        emitted = session.ingest_pcm16le(pcm16([1000] * (sample_rate * 4)))
+        self.assertEqual(len(emitted), 1)
+        self.assertFalse(emitted[0].suspicious)
+        self.assertEqual(emitted[0].threshold, 0.80)
+        self.assertEqual(session.live_summary()["threshold"], 0.80)
+
 
 class AggregationTests(unittest.TestCase):
     def test_high_scores_raise_call_risk_when_evidence_is_sufficient(self):
         detector = FixedDetector([])
         q = quality()
         windows = [
-            WindowResult(0, 0.0, 4.0, 0.90, q),
-            WindowResult(1, 2.0, 6.0, 0.88, q),
-            WindowResult(2, 4.0, 8.0, 0.92, q),
+            window(0, 0.0, 4.0, 0.90, q),
+            window(1, 2.0, 6.0, 0.88, q),
+            window(2, 4.0, 8.0, 0.92, q),
         ]
         result = aggregate_call(windows, 8.0, detector)
         self.assertTrue(result["enough_evidence"])
@@ -131,9 +149,9 @@ class AggregationTests(unittest.TestCase):
         detector = FixedDetector([])
         q = quality()
         windows = [
-            WindowResult(0, 0.0, 4.0, 0.10, q),
-            WindowResult(1, 2.0, 6.0, 0.18, q),
-            WindowResult(2, 4.0, 8.0, 0.20, q),
+            window(0, 0.0, 4.0, 0.10, q),
+            window(1, 2.0, 6.0, 0.18, q),
+            window(2, 4.0, 8.0, 0.20, q),
         ]
         result = aggregate_call(windows, 8.0, detector)
         self.assertTrue(result["enough_evidence"])
@@ -143,7 +161,7 @@ class AggregationTests(unittest.TestCase):
     def test_one_analyzed_window_cannot_force_verdict(self):
         detector = FixedDetector([])
         result = aggregate_call(
-            [WindowResult(0, 0.0, 4.0, 0.99, quality())],
+            [window(0, 0.0, 4.0, 0.99, quality())],
             4.0,
             detector,
         )
@@ -153,14 +171,25 @@ class AggregationTests(unittest.TestCase):
     def test_skipped_window_is_not_counted_as_model_evidence(self):
         detector = FixedDetector([])
         windows = [
-            WindowResult(0, 0.0, 4.0, None, quality(speech_ratio=0.0, usable=False, reason="too_quiet")),
-            WindowResult(1, 2.0, 6.0, 0.9, quality()),
+            window(0, 0.0, 4.0, None, quality(speech_ratio=0.0, usable=False, reason="too_quiet")),
+            window(1, 2.0, 6.0, 0.9, quality()),
         ]
         result = aggregate_call(windows, 6.0, detector)
         self.assertEqual(result["windows_seen"], 2)
         self.assertEqual(result["segments_skipped"], 1)
         self.assertEqual(result["segments_analyzed"], 1)
         self.assertFalse(result["enough_evidence"])
+
+    def test_suspicious_count_respects_detector_operating_threshold(self):
+        detector = FixedDetector([], threshold=0.80)
+        q = quality()
+        windows = [
+            window(0, 0.0, 4.0, 0.75, q, threshold=0.80),
+            window(1, 2.0, 6.0, 0.82, q, threshold=0.80),
+        ]
+        result = aggregate_call(windows, 6.0, detector)
+        self.assertEqual(result["suspicious_segments"], 1)
+        self.assertEqual(result["threshold"], 0.80)
 
 
 if __name__ == "__main__":
