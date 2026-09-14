@@ -14,29 +14,36 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install project and V2 training dependencies
+      - name: Install project and V2 dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
           python -m pip install -r requirements-v2-train.txt
+          python -m pip install -r requirements-v2-data.txt
       - name: Run V2 tests
         run: >-
           python -m pytest
           tests/test_v2_engine.py
           tests/test_v2_detectors.py
           tests/test_v2_data_contract.py
+          tests/test_v2_data_contract_speakers.py
           tests/test_v2_metrics.py
           tests/test_v2_ssl_model.py
+          tests/test_v2_prepare_sea.py
+          tests/test_v2_manifest_tools.py
           -q
-      - name: Compile V2 Python modules
+      - name: Compile V2 Python modules and CLIs
         run: >-
           python -m py_compile
           src/vaanirakshak/v2_audio.py
           src/vaanirakshak/v2_engine.py
           src/vaanirakshak/v2_detectors.py
           src/vaanirakshak/v2_data_contract.py
+          src/vaanirakshak/v2_manifest_tools.py
           src/vaanirakshak/v2_metrics.py
           src/vaanirakshak/v2_ssl_model.py
           src/vaanirakshak/v2_train_ssl.py
           src/vaanirakshak/v2_evaluate.py
+          src/vaanirakshak/v2_prepare_sea.py
           src/vaanirakshak/v2_server.py
+          scripts/v2_manifest.py
