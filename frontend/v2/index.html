@@ -73,7 +73,14 @@
     </section>
 
     <section id="final-card" class="card final-card" hidden>
-      <p class="eyebrow">FINAL CALL REPORT</p>
+      <div class="report-heading">
+        <div>
+          <p class="eyebrow">FINAL CALL SECURITY REPORT</p>
+          <h2>VaaniRakshak V2 assessment</h2>
+        </div>
+        <div id="report-generated" class="report-generated"></div>
+      </div>
+
       <div class="final-grid">
         <div>
           <div id="final-score" class="final-score">--</div>
@@ -84,11 +91,15 @@
           <p id="final-copy"></p>
         </div>
       </div>
+
+      <div id="final-details" class="report-details" aria-label="Call report details"></div>
       <div id="regions" class="regions"></div>
-      <div class="controls">
+
+      <div class="controls report-actions">
         <button id="download-report" class="primary" type="button" disabled>Download audit report (JSON)</button>
+        <button id="print-report" class="secondary" type="button" disabled>Print / Save PDF</button>
       </div>
-      <p class="small">The audit report contains analysis metadata and window evidence only. VaaniRakshak does not persist microphone audio for this export.</p>
+      <p class="small report-privacy">The report contains analysis metadata and window evidence only. VaaniRakshak does not persist microphone audio for this export.</p>
       <p id="final-notice" class="notice"></p>
     </section>
   </main>
