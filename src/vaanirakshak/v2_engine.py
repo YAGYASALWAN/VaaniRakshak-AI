@@ -2,8 +2,8 @@
 
 The product/session logic remains independent of the anti-spoofing model. Incoming
 browser PCM is framed with overlap, quality-gated, normalized to 16 kHz and only
-then passed to a detector. The current detector is still a deterministic mock;
-its outputs MUST NOT be presented as authenticity findings.
+then passed to a detector. The default detector is a deterministic mock; its
+outputs MUST NOT be presented as authenticity findings.
 """
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ WINDOW_SECONDS = 4.0
 HOP_SECONDS = 2.0
 MIN_FINAL_WINDOW_SECONDS = 2.0
 MIN_NEW_TAIL_SECONDS = 0.5
-SUSPICIOUS_THRESHOLD = 0.65
 MIN_ANALYZED_WINDOWS = 2
 MIN_USABLE_SPEECH_SECONDS = 4.0
 
@@ -34,15 +33,20 @@ def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
 
 
 class Detector(Protocol):
-    """Interface a future trained V2 detector must implement."""
+    """Interface every trained or mock V2 detector must implement."""
 
     name: str
     mode: str
+    threshold: float
+    calibrated_probability: bool
+    notice: str
 
     def score(self, samples: np.ndarray, sample_rate: int) -> float:
         """Return a finite synthetic-speech score in [0, 1].
 
         `samples` are mono float32 samples normalized to [-1, 1] at 16 kHz.
+        The score is compared with the detector's own validated operating
+        threshold; the product layer must not invent a model threshold.
         """
 
 
@@ -51,6 +55,12 @@ class MockDetector:
 
     name = "v2-product-mock"
     mode = "mock"
+    threshold = 0.65
+    calibrated_probability = False
+    notice = (
+        "V2 product-skeleton mode uses a deterministic mock detector. Risk and verdict values are "
+        "UI/integration test data, not voice-authenticity findings."
+    )
 
     def score(self, samples: np.ndarray, sample_rate: int) -> float:
         if sample_rate != MODEL_SAMPLE_RATE:
@@ -85,11 +95,16 @@ class WindowResult:
     end_seconds: float
     synthetic_score: float | None
     quality: AudioQuality
+    threshold: float
     inference_ms: float | None = None
 
     @property
     def analyzed(self) -> bool:
         return self.synthetic_score is not None
+
+    @property
+    def suspicious(self) -> bool:
+        return bool(self.analyzed and float(self.synthetic_score) >= self.threshold)
 
     def as_dict(self) -> dict:
         return {
@@ -97,8 +112,9 @@ class WindowResult:
             "start_seconds": round(self.start_seconds, 3),
             "end_seconds": round(self.end_seconds, 3),
             "synthetic_score": None if self.synthetic_score is None else round(self.synthetic_score, 6),
+            "threshold": round(self.threshold, 6),
             "analyzed": self.analyzed,
-            "suspicious": bool(self.analyzed and self.synthetic_score >= SUSPICIOUS_THRESHOLD),
+            "suspicious": self.suspicious,
             "quality": self.quality.as_dict(),
             "inference_ms": None if self.inference_ms is None else round(self.inference_ms, 3),
         }
@@ -118,6 +134,9 @@ class StreamingSession:
     def __post_init__(self) -> None:
         if not 8_000 <= self.sample_rate <= 96_000:
             raise ValueError("sample_rate must be between 8000 and 96000 Hz")
+        threshold = float(getattr(self.detector, "threshold", float("nan")))
+        if not math.isfinite(threshold) or not 0.0 < threshold < 1.0:
+            raise ValueError("Detector must expose a finite threshold between 0 and 1")
 
     @property
     def window_samples(self) -> int:
@@ -175,6 +194,7 @@ class StreamingSession:
             end_seconds=(start_sample + len(samples)) / self.sample_rate,
             synthetic_score=score,
             quality=quality,
+            threshold=float(self.detector.threshold),
             inference_ms=inference_ms,
         )
         self.windows.append(result)
@@ -224,7 +244,7 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
     analyzed = [item for item in items if item.synthetic_score is not None]
     skipped = [item for item in items if item.synthetic_score is None]
     scores = [float(item.synthetic_score) for item in analyzed]
-    suspicious = [item for item in analyzed if float(item.synthetic_score) >= SUSPICIOUS_THRESHOLD]
+    suspicious = [item for item in analyzed if item.suspicious]
     usable_speech_seconds = _estimate_unique_speech_seconds(items)
 
     if scores:
@@ -268,9 +288,11 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
     top_regions.sort(key=lambda item: item.start_seconds)
     inference_values = [item.inference_ms for item in analyzed if item.inference_ms is not None]
 
+    detector_notice = str(getattr(detector, "notice", "Risk is an aggregated security signal and is not proof of authenticity."))
     return {
         "analysis_mode": detector.mode,
         "model": detector.name,
+        "calibrated_probability": bool(getattr(detector, "calibrated_probability", False)),
         "duration_seconds": round(duration_seconds, 3),
         "usable_speech_seconds": round(usable_speech_seconds, 3),
         "windows_seen": len(items),
@@ -285,17 +307,11 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
         "risk_label": risk_label,
         "verdict": verdict,
         "enough_evidence": enough_evidence,
-        "threshold": SUSPICIOUS_THRESHOLD,
+        "threshold": round(float(detector.threshold), 6),
         "window_seconds": WINDOW_SECONDS,
         "hop_seconds": HOP_SECONDS,
         "model_sample_rate": MODEL_SAMPLE_RATE,
         "mean_inference_ms": round(statistics.fmean(inference_values), 3) if inference_values else None,
         "regions": [region.as_dict() for region in top_regions],
-        "notice": (
-            "V2 product-skeleton mode uses a deterministic mock detector. Risk and verdict values are "
-            "UI/integration test data, not voice-authenticity findings. Audio quality gating and 16 kHz "
-            "normalization are active."
-            if detector.mode == "mock"
-            else "Risk is an aggregated security signal and is not proof of authenticity."
-        ),
+        "notice": detector_notice + " Audio quality gating and 16 kHz normalization are active.",
     }
