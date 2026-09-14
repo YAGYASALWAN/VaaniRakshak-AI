@@ -11,6 +11,8 @@ let timerId = null;
 let startedAt = null;
 let stopping = false;
 let backendReady = false;
+let evidenceWindows = [];
+let auditReport = null;
 
 function setMessage(text, error = false) {
   el('message').textContent = text;
@@ -39,6 +41,9 @@ function renderSpeechGate(value) {
 }
 
 function resetLiveUI() {
+  evidenceWindows = [];
+  auditReport = null;
+  el('download-report').disabled = true;
   el('call-state').textContent = 'Ready';
   el('timer').textContent = '00:00';
   el('risk-score').textContent = '--';
@@ -97,6 +102,37 @@ function addSegment(segment) {
   timeline.appendChild(block);
 }
 
+function buildAuditReport(finalResult) {
+  const summary = { ...finalResult };
+  delete summary.type;
+  return {
+    schema: 'vaanirakshak-v2-call-audit-v1',
+    generated_at_utc: new Date().toISOString(),
+    privacy: {
+      raw_audio_included: false,
+      raw_audio_persisted_by_report_export: false,
+      note: 'This client-side report contains analysis metadata and window evidence only.'
+    },
+    summary,
+    windows: evidenceWindows.map(segment => ({ ...segment }))
+  };
+}
+
+function downloadAuditReport() {
+  if (!auditReport) return;
+  const text = JSON.stringify(auditReport, null, 2);
+  const blob = new Blob([text], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const timestamp = auditReport.generated_at_utc.replace(/[:.]/g, '-');
+  anchor.href = url;
+  anchor.download = `vaanirakshak-v2-call-audit-${timestamp}.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 function renderFinal(result) {
   renderSummary(result);
   el('final-score').textContent = result.enough_evidence ? `${result.risk_score}/100` : '--';
@@ -123,6 +159,8 @@ function renderFinal(result) {
       regions.appendChild(row);
     }
   }
+  auditReport = buildAuditReport(result);
+  el('download-report').disabled = false;
   el('final-card').hidden = false;
   el('final-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -187,6 +225,7 @@ async function handleStreamMessage(event) {
     return;
   }
   if (data.type === 'segment') {
+    evidenceWindows.push(data.segment);
     addSegment(data.segment);
     renderSummary(data.summary);
     return;
@@ -195,7 +234,7 @@ async function handleStreamMessage(event) {
     renderFinal(data);
     el('call-state').textContent = 'Analysis complete';
     setConnection('Complete', true);
-    setMessage('Final call report generated.');
+    setMessage('Final call report generated. Audio was not added to the audit export.');
     await cleanupAudio();
     el('start').disabled = false;
     el('stop').disabled = true;
@@ -276,6 +315,7 @@ async function stopAnalysis() {
 
 el('start').addEventListener('click', startAnalysis);
 el('stop').addEventListener('click', stopAnalysis);
+el('download-report').addEventListener('click', downloadAuditReport);
 window.addEventListener('beforeunload', () => {
   stream?.getTracks().forEach(track => track.stop());
   closeSocket();
