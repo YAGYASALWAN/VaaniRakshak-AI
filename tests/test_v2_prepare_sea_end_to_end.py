@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pyarrow as pa
@@ -82,7 +83,14 @@ class V2SEAEndToEndPreparationTests(unittest.TestCase):
         item = {"path": source_path, "size": len(blob), "split": "train", "sha256": "fixture"}
         source = {"repository": REPOSITORY, "revision": REVISION, "files": [item]}
 
-        with tempfile.TemporaryDirectory() as folder:
+        # Production select_groups() deliberately enforces substantial balanced
+        # coverage in train/dev/test. This two-row fixture is only an integration
+        # test for preparation mechanics, so selection itself is stubbed here.
+        choose_all = lambda candidates, budget: list(candidates)
+
+        with tempfile.TemporaryDirectory() as folder, patch(
+            "vaanirakshak.v2_prepare_sea.select_groups", side_effect=choose_all
+        ):
             root = Path(folder)
             first = _LocalRangeClient({source_path: blob})
             manifest = prepare(root, source, first, budget=1_000_000_000)
