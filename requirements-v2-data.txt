@@ -3,4 +3,5 @@
 -r requirements-v2.txt
 pyarrow>=18,<26
 huggingface-hub>=0.34,<2
+datasets>=3.2,<5
 filelock>=3.16,<4
