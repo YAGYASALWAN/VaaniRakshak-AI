@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,6 +54,11 @@ class CheckpointDetectorTests(unittest.TestCase):
             self.assertEqual(detector.name, "unit-test-model")
             self.assertEqual(detector.threshold, 0.73)
             self.assertTrue(detector.calibrated_probability)
+
+            expected_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            self.assertEqual(detector.checkpoint_sha256, expected_digest)
+            self.assertEqual(detector.info.checkpoint_sha256, expected_digest)
+            self.assertEqual(detector.info.as_dict()["checkpoint_sha256"], expected_digest)
 
             t = np.arange(64_000, dtype=np.float32) / 16_000.0
             wave = (0.05 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
