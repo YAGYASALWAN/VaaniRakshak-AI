@@ -54,3 +54,5 @@ jobs:
           src/vaanirakshak/v2_prepare_benchmark.py
           src/vaanirakshak/v2_server.py
           scripts/v2_manifest.py
+      - name: Validate V2 frontend JavaScript
+        run: node --check frontend/v2/app.js
