@@ -12,6 +12,7 @@ for fallback/debugging.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -29,7 +30,7 @@ from vaanirakshak.v2_engine import HOP_SECONDS, WINDOW_SECONDS, MockDetector, St
 ROOT = Path(__file__).resolve().parents[2]
 V2_FRONTEND = ROOT / "frontend" / "v2"
 
-app = FastAPI(title="VaaniRakshak V2", version="2.3.0-alpha")
+app = FastAPI(title="VaaniRakshak V2", version="2.4.0-alpha")
 app.mount("/assets", StaticFiles(directory=V2_FRONTEND), name="assets")
 
 
@@ -95,6 +96,7 @@ def _detector_status() -> dict:
             "hop_seconds": HOP_SECONDS,
             "model_sample_rate": MODEL_SAMPLE_RATE,
             "quality_gate": getattr(SPEECH_GATE, "name", None),
+            "window_execution": "worker-thread-when-analysis-ready",
         }
 
     status = {
@@ -108,6 +110,7 @@ def _detector_status() -> dict:
         "hop_seconds": HOP_SECONDS,
         "model_sample_rate": MODEL_SAMPLE_RATE,
         "quality_gate": SPEECH_GATE.name,
+        "window_execution": "worker-thread-when-analysis-ready",
         "notice": DETECTOR.notice + f" Speech gate: {SPEECH_GATE.name}.",
     }
     detector_metadata = _detector_metadata()
@@ -125,6 +128,15 @@ def index() -> FileResponse:
 def status() -> JSONResponse:
     payload = _detector_status()
     return JSONResponse(payload, status_code=200 if payload["ready"] else 503)
+
+
+async def _ingest_without_blocking_event_loop(session: StreamingSession, payload: bytes):
+    """Keep cheap packet buffering inline; offload only packets that trigger window analysis."""
+    incoming_samples = len(payload) // 2
+    analysis_ready = len(session.buffer) + incoming_samples >= session.window_samples
+    if analysis_ready:
+        return await asyncio.to_thread(session.ingest_pcm16le, payload)
+    return session.ingest_pcm16le(payload)
 
 
 @app.websocket("/ws/v2/analyze")
@@ -150,6 +162,7 @@ async def analyze_stream(websocket: WebSocket) -> None:
         "threshold": DETECTOR.threshold,
         "calibrated_probability": bool(DETECTOR.calibrated_probability),
         "speech_gate": SPEECH_GATE.name,
+        "window_execution": "worker-thread-when-analysis-ready",
     }
     detector_metadata = _detector_metadata()
     if detector_metadata is not None:
@@ -195,6 +208,7 @@ async def analyze_stream(websocket: WebSocket) -> None:
                         "analysis_mode": DETECTOR.mode,
                         "model": DETECTOR.name,
                         "speech_gate": SPEECH_GATE.name,
+                        "window_execution": "worker-thread-when-analysis-ready",
                         "notice": session.live_summary()["notice"],
                     }
                     if detector_metadata is not None:
@@ -206,7 +220,8 @@ async def analyze_stream(websocket: WebSocket) -> None:
                     if session is None:
                         await websocket.send_json({"type": "error", "message": "Session has not started"})
                         continue
-                    final = session.finalize()
+                    # Finalization can run preprocessing/model inference on a partial tail.
+                    final = await asyncio.to_thread(session.finalize)
                     if detector_metadata is not None:
                         final["detector"] = detector_metadata
                     await websocket.send_json({"type": "final", "session_id": session_id, **final})
@@ -226,7 +241,7 @@ async def analyze_stream(websocket: WebSocket) -> None:
                     await websocket.send_json({"type": "error", "message": "Send start before audio"})
                     continue
                 try:
-                    emitted = session.ingest_pcm16le(payload)
+                    emitted = await _ingest_without_blocking_event_loop(session, payload)
                     for window in emitted:
                         await websocket.send_json(
                             {
