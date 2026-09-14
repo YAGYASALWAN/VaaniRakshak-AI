@@ -84,6 +84,16 @@ class Transfer:
                 raise ValueError("Persistent range-cache scope identity changed")
         else:
             save_json(identity_path, identity)
+
+        # A process may die after writing a temporary cache file but before its
+        # atomic rename. Those files are never valid cache entries and must not
+        # consume the row-group cache budget on the next run.
+        for temporary in directory.glob("*.tmp"):
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
         self._scope_id = value
         self._scope_dir = directory
         self._scope_cached_bytes = sum(
@@ -137,12 +147,28 @@ class Transfer:
         key = hashlib.blake2s(material, digest_size=16).hexdigest()
         return self._scope_dir / f"{key}.bin", self._scope_dir / f"{key}.json"
 
+    def _drop_range_pair(self, data_path: Path, meta_path: Path) -> None:
+        for path in (data_path, meta_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        self._scope_cached_bytes = sum(
+            path.stat().st_size for path in self._scope_dir.glob("*.bin") if path.is_file()
+        ) if self._scope_dir is not None else 0
+
     def _load_persistent_range(self, item, offset: int, size: int) -> bytes | None:
         paths = self._range_cache_paths(item, offset, size)
         if paths is None:
             return None
         data_path, meta_path = paths
+        if not data_path.is_file() and not meta_path.is_file():
+            return None
         if not data_path.is_file() or not meta_path.is_file():
+            # An incomplete pair may be left if the process died between the two
+            # atomic file commits. It is not trusted and should not consume cache
+            # capacity on the next attempt.
+            self._drop_range_pair(data_path, meta_path)
             return None
         try:
             metadata = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -165,14 +191,7 @@ class Transfer:
                 raise ValueError("range cache digest mismatch")
             return data
         except (OSError, ValueError, json.JSONDecodeError):
-            for path in (data_path, meta_path):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-            self._scope_cached_bytes = sum(
-                path.stat().st_size for path in self._scope_dir.glob("*.bin") if path.is_file()
-            ) if self._scope_dir is not None else 0
+            self._drop_range_pair(data_path, meta_path)
             return None
 
     def _save_persistent_range(self, item, offset: int, size: int, data: bytes) -> None:
