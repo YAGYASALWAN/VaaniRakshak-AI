@@ -28,14 +28,23 @@ class V2MetricsTests(unittest.TestCase):
         metrics = metrics_at_threshold(labels, scores, threshold)
         self.assertLessEqual(metrics["false_positive_rate"], 0.25)
         self.assertGreaterEqual(metrics["recall"], 0.75)
+        self.assertGreater(threshold, 0.0)
+        self.assertLess(threshold, 1.0)
 
-    def test_zero_fpr_budget_has_finite_reject_all_fallback(self):
+    def test_zero_fpr_budget_has_deployable_reject_all_fallback(self):
         labels = [0, 1]
         scores = [0.9, 0.8]
         threshold = threshold_for_max_fpr(labels, scores, max_fpr=0.0)
         self.assertGreater(threshold, max(scores))
+        self.assertLess(threshold, 1.0)
         metrics = metrics_at_threshold(labels, scores, threshold)
         self.assertEqual(metrics["false_positive_rate"], 0.0)
+
+    def test_impossible_zero_fpr_budget_with_saturated_bonafide_score_is_rejected(self):
+        labels = [0, 1]
+        scores = [1.0, 0.8]
+        with self.assertRaisesRegex(ValueError, "not achievable"):
+            threshold_for_max_fpr(labels, scores, max_fpr=0.0)
 
     def test_eer_is_low_for_separable_scores(self):
         value, threshold = eer([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9])
