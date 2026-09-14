@@ -26,22 +26,44 @@ MIN_FINAL_WINDOW_SECONDS = 2.0
 MIN_NEW_TAIL_SECONDS = 0.5
 MIN_ANALYZED_WINDOWS = 2
 MIN_USABLE_SPEECH_SECONDS = 4.0
+PROBABILITY_EPSILON = 1e-6
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
 
-def _threshold_relative(score: float, threshold: float) -> float:
-    """Map a detector score to [0, 1] with its operating threshold at 0.5.
+def _logit(value: float) -> float:
+    probability = _clamp(float(value), PROBABILITY_EPSILON, 1.0 - PROBABILITY_EPSILON)
+    return math.log(probability) - math.log1p(-probability)
 
-    This is NOT probability calibration. It only prevents the product risk engine
-    from assuming that identical raw scores from detectors with different decision
-    thresholds carry identical meaning.
+
+def _sigmoid(value: float) -> float:
+    if value >= 0.0:
+        return 1.0 / (1.0 + math.exp(-value))
+    exp_value = math.exp(value)
+    return exp_value / (1.0 + exp_value)
+
+
+def _threshold_relative(score: float, threshold: float, evidence_temperature: float = 1.0) -> float:
+    """Return threshold-relative evidence while remaining invariant to temperature calibration.
+
+    The live product may expose a temperature-calibrated detector probability, but
+    probability calibration must not change the underlying security-risk evidence.
+    We therefore measure the raw logit margin from the detector operating threshold.
+
+    For an uncalibrated detector, ``evidence_temperature`` is 1. For a checkpoint
+    whose visible probability is ``sigmoid(raw_logit / T)``, multiplying the visible
+    logit margin by ``T`` reconstructs the original margin. The threshold always maps
+    to evidence 0.5 and a calibrated/raw checkpoint pair produces the same evidence.
+
+    This remains a product evidence transform, not probability calibration.
     """
-    if score >= threshold:
-        return 0.5 + 0.5 * (score - threshold) / max(1e-9, 1.0 - threshold)
-    return 0.5 * score / max(1e-9, threshold)
+    temperature = float(evidence_temperature)
+    if not math.isfinite(temperature) or temperature <= 0.0:
+        raise ValueError("evidence_temperature must be finite and positive")
+    margin = (_logit(score) - _logit(threshold)) * temperature
+    return _sigmoid(margin)
 
 
 class Detector(Protocol):
@@ -64,6 +86,7 @@ class MockDetector:
     mode = "mock"
     threshold = 0.65
     calibrated_probability = False
+    temperature = 1.0
     notice = (
         "V2 product-skeleton mode uses a deterministic mock detector. Risk and verdict values are "
         "UI/integration test data, not voice-authenticity findings."
@@ -105,6 +128,7 @@ class WindowResult:
     inference_ms: float | None = None
     preprocessing_ms: float | None = None
     total_analysis_ms: float | None = None
+    evidence_temperature: float = 1.0
 
     @property
     def analyzed(self) -> bool:
@@ -114,16 +138,26 @@ class WindowResult:
     def suspicious(self) -> bool:
         return bool(self.analyzed and float(self.synthetic_score) >= self.threshold)
 
+    @property
+    def evidence_signal(self) -> float | None:
+        if self.synthetic_score is None:
+            return None
+        return _threshold_relative(
+            float(self.synthetic_score),
+            self.threshold,
+            self.evidence_temperature,
+        )
+
     def as_dict(self) -> dict:
-        evidence_signal = None
-        if self.synthetic_score is not None:
-            evidence_signal = _threshold_relative(float(self.synthetic_score), self.threshold)
+        evidence_signal = self.evidence_signal
         return {
             "index": self.index,
             "start_seconds": round(self.start_seconds, 3),
             "end_seconds": round(self.end_seconds, 3),
             "synthetic_score": None if self.synthetic_score is None else round(self.synthetic_score, 6),
             "evidence_signal": None if evidence_signal is None else round(evidence_signal, 6),
+            "evidence_semantics": "temperature-normalized-logit-margin",
+            "evidence_temperature": round(float(self.evidence_temperature), 6),
             "threshold": round(self.threshold, 6),
             "analyzed": self.analyzed,
             "suspicious": self.suspicious,
@@ -152,6 +186,9 @@ class StreamingSession:
         threshold = float(getattr(self.detector, "threshold", float("nan")))
         if not math.isfinite(threshold) or not 0.0 < threshold < 1.0:
             raise ValueError("Detector must expose a finite threshold between 0 and 1")
+        evidence_temperature = float(getattr(self.detector, "temperature", 1.0))
+        if not math.isfinite(evidence_temperature) or evidence_temperature <= 0.0:
+            raise ValueError("Detector evidence temperature must be finite and positive")
 
     @property
     def window_samples(self) -> int:
@@ -217,6 +254,7 @@ class StreamingSession:
             inference_ms=inference_ms,
             preprocessing_ms=preprocessing_ms,
             total_analysis_ms=total_analysis_ms,
+            evidence_temperature=float(getattr(self.detector, "temperature", 1.0)),
         )
         self.windows.append(result)
         return result
@@ -259,7 +297,7 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
     analyzed = [item for item in items if item.synthetic_score is not None]
     skipped = [item for item in items if item.synthetic_score is None]
     scores = [float(item.synthetic_score) for item in analyzed]
-    evidence_scores = [_threshold_relative(float(item.synthetic_score), item.threshold) for item in analyzed]
+    evidence_scores = [float(item.evidence_signal) for item in analyzed if item.evidence_signal is not None]
     suspicious = [item for item in analyzed if item.suspicious]
     usable_speech_seconds = _estimate_unique_speech_seconds(items)
 
@@ -323,6 +361,7 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
         "suspicious_ratio": round(suspicious_ratio, 6),
         "median_synthetic_score": round(median_score, 6),
         "mean_synthetic_score": round(mean_score, 6),
+        "evidence_semantics": "temperature-normalized-logit-margin",
         "median_evidence_signal": round(median_evidence, 6),
         "mean_evidence_signal": round(mean_evidence, 6),
         "consistency": round(consistency, 6),
