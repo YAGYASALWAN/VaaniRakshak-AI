@@ -46,6 +46,8 @@ The summary is the final server-produced call assessment. Important fields inclu
 - `session_id`: server-generated analysis-session identifier;
 - `analysis_mode`: mock, trained, or explicit legacy-experimental mode;
 - `model`: detector identity;
+- `detector`: trained-checkpoint metadata when a real/legacy checkpoint is connected;
+- `detector.checkpoint_sha256`: SHA-256 fingerprint of the exact checkpoint file loaded for inference;
 - `calibrated_probability`: whether detector scores have validated probability calibration;
 - `speech_gate`: active VAD/speech-gate identity;
 - `duration_seconds`: streamed call audio duration;
@@ -64,6 +66,8 @@ The summary is the final server-produced call assessment. Important fields inclu
 - `mean_total_window_ms`: mean total processing time per framed window;
 - `regions`: highest-scoring analyzed regions;
 - `notice`: detector/product limitation text.
+
+The checkpoint digest makes two reports comparable at the model-artifact level even when local checkpoint paths differ. It is an identity fingerprint, not a digital signature and not proof that a report itself was not edited after export.
 
 ## `windows`
 
@@ -94,6 +98,7 @@ Skipped windows remain in the audit. They are not silently removed, because know
 4. An `Insufficient evidence` verdict must remain distinguishable from `Likely genuine`.
 5. The detector threshold stored in the report is the model's configured operating point; a live session must not tune it.
 6. The report must preserve the active detector mode and speech gate so a later reviewer knows what system produced the evidence.
+7. When a checkpoint-backed detector is active, preserve its checkpoint SHA-256 fingerprint.
 
 ## Future evolution
 
@@ -101,7 +106,6 @@ A later schema version may add:
 
 - cryptographic report digest/signature;
 - application/build commit identifier;
-- trained-checkpoint content hash;
 - calibrated confidence intervals;
 - PDF rendering derived from the same JSON audit;
 - enterprise policy/action metadata.
