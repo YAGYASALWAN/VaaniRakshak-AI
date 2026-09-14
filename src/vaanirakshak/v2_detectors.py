@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+import threading
 from typing import Any
 
 import numpy as np
@@ -70,7 +71,13 @@ def _validate_threshold(value: Any) -> float:
 
 
 class CheckpointDetector:
-    """Adapter from a saved PyTorch anti-spoofing checkpoint to the V2 contract."""
+    """Adapter from a saved PyTorch anti-spoofing checkpoint to the V2 contract.
+
+    The model is shared by live sessions. A lock serializes calls into PyTorch so
+    the async server can offload inference to worker threads without allowing two
+    sessions to mutate/execute the same module concurrently. A later production
+    serving layer can replace this with explicit batching/worker processes.
+    """
 
     def __init__(self, checkpoint: str | Path, device: str = "cpu", *, allow_legacy: bool = False):
         path = Path(checkpoint).expanduser().resolve()
@@ -126,6 +133,7 @@ class CheckpointDetector:
         self.checkpoint_sha256 = checkpoint_sha256
         self._torch = torch
         self._frontend = None
+        self._inference_lock = threading.Lock()
 
         torch.set_num_threads(min(4, max(1, torch.get_num_threads())))
 
@@ -184,15 +192,16 @@ class CheckpointDetector:
         fixed[:count] = np.clip(wave[:count], -1.0, 1.0)
         tensor = self._torch.from_numpy(fixed).unsqueeze(0).to(self.device)
 
-        with self._torch.inference_mode():
-            if self.architecture == LEGACY_SCHEMA:
-                features = self._frontend(tensor)
-                logit = self._model(features)
-            else:
-                attention_mask = self._torch.zeros_like(tensor, dtype=self._torch.long)
-                attention_mask[:, :count] = 1
-                logit = self._model(tensor, attention_mask=attention_mask)
-            score = float(logit.sigmoid().item())
+        with self._inference_lock:
+            with self._torch.inference_mode():
+                if self.architecture == LEGACY_SCHEMA:
+                    features = self._frontend(tensor)
+                    logit = self._model(features)
+                else:
+                    attention_mask = self._torch.zeros_like(tensor, dtype=self._torch.long)
+                    attention_mask[:, :count] = 1
+                    logit = self._model(tensor, attention_mask=attention_mask)
+                score = float(logit.sigmoid().item())
 
         if not np.isfinite(score) or not 0.0 <= score <= 1.0:
             raise ValueError("Detector produced an invalid score")
