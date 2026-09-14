@@ -1,8 +1,9 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from vaanirakshak.sea_transfer import Transfer
+from vaanirakshak.sea_transfer import MAX_BYTES, Transfer
 
 
 class _Response:
@@ -46,6 +47,32 @@ class _FailOpener:
 
 
 class V2SEARetryCacheTests(unittest.TestCase):
+    def test_invalid_transfer_ledgers_are_rejected_before_network_setup(self):
+        fixtures = [
+            ("{not-json", "invalid JSON"),
+            (json.dumps([]), "JSON object"),
+            (json.dumps({"reserved_bytes": True}), "integer"),
+            (json.dumps({"reserved_bytes": -1}), "hard ceiling"),
+            (json.dumps({"reserved_bytes": MAX_BYTES + 1}), "hard ceiling"),
+        ]
+        for content, message in fixtures:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root / "transfer.json").write_text(content, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    Transfer(root, "unit-test-token")
+
+    def test_exact_transfer_ceiling_loads_but_refuses_new_remote_bytes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "transfer.json").write_text(
+                json.dumps({"reserved_bytes": MAX_BYTES}), encoding="utf-8"
+            )
+            transfer = Transfer(root, "unit-test-token")
+            transfer.opener = _FailOpener()
+            with self.assertRaisesRegex(ValueError, "30 GB transfer ceiling"):
+                transfer.fetch({"path": "data/train/example.parquet", "size": 10}, 0, 1)
+
     def test_persistent_range_survives_new_transfer_without_double_reservation(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -59,7 +86,7 @@ class V2SEARetryCacheTests(unittest.TestCase):
             self.assertEqual(first.fetch(item, 0, 4), b"abcd")
             self.assertEqual(first.used, 4)
             self.assertEqual(opener.calls, 1)
-            first.end_scope(scope, clear=False)  # simulate process interruption
+            first.end_scope(scope, clear=False)
 
             second = Transfer(root, "unit-test-token")
             second.opener = _FailOpener()
@@ -86,7 +113,7 @@ class V2SEARetryCacheTests(unittest.TestCase):
             cache_dir = first._scope_directory(scope)
             data_files = list(cache_dir.glob("*.bin"))
             self.assertEqual(len(data_files), 1)
-            data_files[0].write_bytes(b"wxyz")  # digest no longer matches metadata
+            data_files[0].write_bytes(b"wxyz")
 
             second = Transfer(root, "unit-test-token")
             opener = _Opener(b"abcd", "bytes 0-3/10")
@@ -112,7 +139,7 @@ class V2SEARetryCacheTests(unittest.TestCase):
             cache_dir = first._scope_directory(scope)
             metadata_files = [path for path in cache_dir.glob("*.json") if path.name != "scope.json"]
             self.assertEqual(len(metadata_files), 1)
-            metadata_files[0].unlink()  # simulate crash between data and metadata commits
+            metadata_files[0].unlink()
 
             second = Transfer(root, "unit-test-token")
             opener = _Opener(b"abcd", "bytes 0-3/10")
