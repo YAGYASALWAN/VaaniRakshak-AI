@@ -1,6 +1,6 @@
 # VaaniRakshak V2 Probability Calibration
 
-VaaniRakshak separates **detector discrimination** from **probability calibration**.
+VaaniRakshak separates **detector discrimination**, **probability calibration**, and **call-level security risk**.
 
 A newly trained WavLM checkpoint produces a detector score in `[0, 1]`, but that score is explicitly **not** treated as a calibrated probability. Temperature scaling is an optional post-training step fitted on the development split only.
 
@@ -105,7 +105,54 @@ This is deliberate. Temperature scaling divides every window logit by the same p
 
 An arithmetic median of probabilities would not have this guarantee for an even number of windows.
 
-## 5. Evaluate the raw checkpoint
+## 5. Live risk evidence also stays invariant
+
+The live product displays detector scores and also derives a separate threshold-relative evidence signal for temporal risk aggregation.
+
+The risk engine must not measure raw distance in calibrated-probability space, because temperature scaling changes that distance even when it preserves the detector decision.
+
+V2 therefore reconstructs the detector's pre-calibration logit margin:
+
+```text
+visible_margin = logit(score) - logit(threshold)
+raw_margin = visible_margin * evidence_temperature
+evidence_signal = sigmoid(raw_margin)
+```
+
+For an uncalibrated checkpoint:
+
+```text
+evidence_temperature = 1
+```
+
+For a temperature-calibrated checkpoint:
+
+```text
+evidence_temperature = T
+```
+
+Since both the visible score and threshold logits were divided by `T`, multiplying their difference by `T` reconstructs the original margin.
+
+The consequence is intentional: a raw checkpoint and its correctly calibrated counterpart should preserve all of the following for the same call audio:
+
+- threshold-crossing decisions;
+- suspicious-window count;
+- per-window evidence signals;
+- median/mean evidence statistics;
+- consistency statistic;
+- call risk score;
+- risk label;
+- final heuristic verdict.
+
+The audit records this transform as:
+
+```text
+evidence_semantics = temperature-normalized-logit-margin
+```
+
+Calibration is allowed to change probability semantics. It is not allowed to silently change the current product security policy.
+
+## 6. Evaluate the raw checkpoint
 
 ```powershell
 python -m vaanirakshak.v2_evaluate `
@@ -124,7 +171,7 @@ uncalibrated_detector_score
 
 NLL, Brier score and ECE are still reported as diagnostics, but the score must not be described as a probability.
 
-## 6. Evaluate the calibrated checkpoint on untouched test data
+## 7. Evaluate the calibrated checkpoint on untouched test data
 
 ```powershell
 python -m vaanirakshak.v2_evaluate `
@@ -151,7 +198,7 @@ ECE
 
 These test metrics evaluate whether development calibration generalized. They are **not** used to refit the temperature.
 
-## 7. Expected raw-vs-calibrated invariants
+## 8. Expected raw-vs-calibrated invariants
 
 For the same audio and the decision-preserving transformed threshold:
 
@@ -160,11 +207,12 @@ For the same audio and the decision-preserving transformed threshold:
 - confusion counts, accuracy, precision, recall, F1, FPR and FNR should therefore be unchanged apart from numerical edge cases at an exact threshold tie;
 - ROC-AUC and PR-AUC should be unchanged because temperature scaling is monotonic;
 - EER value should be unchanged while its numerical score threshold may transform;
+- live risk evidence and heuristic verdict should remain unchanged because risk uses the reconstructed pre-calibration logit margin;
 - NLL, Brier score and ECE may change and are the main quantities calibration is intended to improve.
 
-If classification metrics move materially after calibration, treat that as an implementation defect and investigate before promotion.
+If classification metrics or live heuristic risk move materially after calibration, treat that as an implementation defect and investigate before promotion.
 
-## 8. Cross-dataset calibration is a separate release question
+## 9. Cross-dataset and robustness calibration are separate release questions
 
 A temperature fitted on SEA-Spoof development data may not remain well calibrated on a different corpus/channel/generator distribution.
 
@@ -180,11 +228,11 @@ python -m vaanirakshak.v2_evaluate `
   --device cuda
 ```
 
-Repeat for ASVspoof 5.
+Repeat for ASVspoof 5 and run the robustness suite on the calibrated checkpoint. The robustness report compares NLL, Brier and ECE under duration, telephony and noise stress against the clean baseline without refitting calibration.
 
-Do not fit a new temperature on an external **test** benchmark and then continue calling that benchmark a clean held-out test.
+Do not fit a new temperature on an external **test** benchmark or stressed test condition and then continue calling that result a clean held-out evaluation.
 
-## 9. Use the calibrated checkpoint in the live product
+## 10. Use the calibrated checkpoint in the live product
 
 ```powershell
 $env:VAANIRAKSHAK_V2_CHECKPOINT = "models/v2_wavlm_sea/best_calibrated.pt"
@@ -199,9 +247,9 @@ The V2 status/dashboard will expose:
 calibrated_probability = true
 ```
 
-and the detector metadata includes the calibration record and calibrated-checkpoint SHA-256.
+and the detector metadata includes the calibration record and calibrated-checkpoint SHA-256. The call audit separately records threshold-relative evidence semantics so probability display and security-risk evidence remain distinguishable.
 
-## 10. Important interpretation boundary
+## 11. Important interpretation boundary
 
 A calibrated detector probability means approximately:
 
