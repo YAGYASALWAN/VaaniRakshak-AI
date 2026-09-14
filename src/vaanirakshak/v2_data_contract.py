@@ -180,6 +180,7 @@ def audit_manifest(
     audio_refs: dict[str, AudioRecord] = {}
     hashes: dict[str, list[AudioRecord]] = {}
     source_ids: dict[str, list[AudioRecord]] = {}
+    speakers: dict[str, list[AudioRecord]] = {}
 
     for item in items:
         if item.record_id in ids:
@@ -201,6 +202,8 @@ def audit_manifest(
             hashes.setdefault(item.content_sha256, []).append(item)
         if item.source_utterance_id:
             source_ids.setdefault(item.source_utterance_id, []).append(item)
+        if item.speaker_id:
+            speakers.setdefault(item.speaker_id, []).append(item)
 
     for digest, group in hashes.items():
         splits = {item.split for item in group}
@@ -214,6 +217,14 @@ def audit_manifest(
         splits = {item.split for item in group}
         if len(splits) > 1:
             errors.append(f"source_utterance_id {source_id!r} crosses splits {sorted(splits)}")
+
+    # When a source supplies a speaker/voice identity, keep it split-disjoint. We
+    # do not invent IDs where upstream metadata is absent, but known identities
+    # must never be knowingly shared between training and evaluation.
+    for speaker_id, group in speakers.items():
+        splits = {item.split for item in group}
+        if len(splits) > 1:
+            errors.append(f"speaker_id {speaker_id!r} crosses splits {sorted(splits)}")
 
     for split in ("train", "dev", "test"):
         subset = [item for item in items if item.split == split]
@@ -230,6 +241,8 @@ def audit_manifest(
         "by_label": {label: sum(item.label == label for item in items) for label in ("bonafide", "spoof")},
         "datasets": sorted({item.dataset for item in items}),
         "spoof_generators": sorted({item.generator_id for item in items if item.generator_id}),
+        "speaker_ids_present": sum(bool(item.speaker_id) for item in items),
+        "source_utterance_ids_present": sum(bool(item.source_utterance_id) for item in items),
     }
     return AuditResult(tuple(dict.fromkeys(errors)), tuple(dict.fromkeys(warnings)), counts)
 
