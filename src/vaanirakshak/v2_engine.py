@@ -32,6 +32,18 @@ def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
 
+def _threshold_relative(score: float, threshold: float) -> float:
+    """Map a detector score to [0, 1] with its operating threshold at 0.5.
+
+    This is NOT probability calibration. It only prevents the product risk engine
+    from assuming that identical raw scores from detectors with different decision
+    thresholds carry identical meaning.
+    """
+    if score >= threshold:
+        return 0.5 + 0.5 * (score - threshold) / max(1e-9, 1.0 - threshold)
+    return 0.5 * score / max(1e-9, threshold)
+
+
 class Detector(Protocol):
     """Interface every trained or mock V2 detector must implement."""
 
@@ -75,7 +87,6 @@ class MockDetector:
         zcr = crossings / max(1, len(wave) - 1)
         crest = peak / max(rms, 1e-6)
 
-        # Stable per-window jitter: UI/integration exercise only, never an ML claim.
         quantized = np.clip(np.rint(wave[:4096] * 32767.0), -32768, 32767).astype("<i2")
         digest = hashlib.blake2s(quantized.tobytes(), digest_size=2).digest()
         jitter = (int.from_bytes(digest, "little") / 65535.0 - 0.5) * 0.18
@@ -107,11 +118,15 @@ class WindowResult:
         return bool(self.analyzed and float(self.synthetic_score) >= self.threshold)
 
     def as_dict(self) -> dict:
+        evidence_signal = None
+        if self.synthetic_score is not None:
+            evidence_signal = _threshold_relative(float(self.synthetic_score), self.threshold)
         return {
             "index": self.index,
             "start_seconds": round(self.start_seconds, 3),
             "end_seconds": round(self.end_seconds, 3),
             "synthetic_score": None if self.synthetic_score is None else round(self.synthetic_score, 6),
+            "evidence_signal": None if evidence_signal is None else round(evidence_signal, 6),
             "threshold": round(self.threshold, 6),
             "analyzed": self.analyzed,
             "suspicious": self.suspicious,
@@ -147,7 +162,6 @@ class StreamingSession:
         return int(self.sample_rate * HOP_SECONDS)
 
     def ingest_pcm16le(self, payload: bytes) -> list[WindowResult]:
-        """Ingest signed little-endian mono PCM and return newly framed windows."""
         if self.finalized:
             raise RuntimeError("Session is already finalized")
         if not payload:
@@ -166,9 +180,6 @@ class StreamingSession:
         self.buffer.extend(chunk)
         self.total_samples += len(chunk)
         emitted: list[WindowResult] = []
-
-        # Sliding window: after a 4 s inference window, retain 2 s so the next
-        # inference overlaps the previous one by 50%.
         while len(self.buffer) >= self.window_samples:
             window = list(self.buffer[: self.window_samples])
             emitted.append(self._analyze_window(window, self.buffer_start_sample))
@@ -201,7 +212,6 @@ class StreamingSession:
         return result
 
     def finalize(self) -> dict:
-        """Analyze one useful partial tail and return a call-level product summary."""
         if self.finalized:
             return aggregate_call(self.windows, self.total_samples / self.sample_rate, self.detector)
         self.finalized = True
@@ -211,10 +221,6 @@ class StreamingSession:
         tail_end_sample = self.buffer_start_sample + len(self.buffer)
         last_end_sample = int(round(self.windows[-1].end_seconds * self.sample_rate)) if self.windows else 0
         new_tail_samples = tail_end_sample - last_end_sample if self.windows else len(self.buffer)
-
-        # With overlapping windows, the retained buffer can be entirely contained in
-        # the last full window. Only infer on the tail if it actually includes new
-        # call audio; otherwise finalization would duplicate evidence.
         if len(self.buffer) >= min_tail and new_tail_samples >= min_new:
             self._analyze_window(list(self.buffer), self.buffer_start_sample)
         self.buffer = array("h")
@@ -225,7 +231,6 @@ class StreamingSession:
 
 
 def _estimate_unique_speech_seconds(items: list[WindowResult]) -> float:
-    """Estimate usable speech without double-counting overlapping window coverage."""
     if not items:
         return 0.0
     ordered = sorted(items, key=lambda item: item.start_seconds)
@@ -244,26 +249,28 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
     analyzed = [item for item in items if item.synthetic_score is not None]
     skipped = [item for item in items if item.synthetic_score is None]
     scores = [float(item.synthetic_score) for item in analyzed]
+    evidence_scores = [_threshold_relative(float(item.synthetic_score), item.threshold) for item in analyzed]
     suspicious = [item for item in analyzed if item.suspicious]
     usable_speech_seconds = _estimate_unique_speech_seconds(items)
 
     if scores:
         median_score = statistics.median(scores)
         mean_score = statistics.fmean(scores)
+        median_evidence = statistics.median(evidence_scores)
+        mean_evidence = statistics.fmean(evidence_scores)
         suspicious_ratio = len(suspicious) / len(scores)
-        dispersion = statistics.pstdev(scores) if len(scores) > 1 else 0.0
+        dispersion = statistics.pstdev(evidence_scores) if len(evidence_scores) > 1 else 0.0
         consistency = _clamp(1.0 - dispersion / 0.30)
-        # Temporary product heuristic, not a calibrated probability. V2 experiments
-        # must later determine appropriate call-level aggregation and thresholds.
         risk_fraction = _clamp(
-            0.50 * median_score
-            + 0.25 * mean_score
+            0.50 * median_evidence
+            + 0.25 * mean_evidence
             + 0.20 * suspicious_ratio
             + 0.05 * consistency
         )
         risk_score = round(risk_fraction * 100)
     else:
-        median_score = mean_score = suspicious_ratio = 0.0
+        median_score = mean_score = 0.0
+        median_evidence = mean_evidence = suspicious_ratio = 0.0
         consistency = 0.0
         risk_score = 0
 
@@ -302,6 +309,8 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
         "suspicious_ratio": round(suspicious_ratio, 6),
         "median_synthetic_score": round(median_score, 6),
         "mean_synthetic_score": round(mean_score, 6),
+        "median_evidence_signal": round(median_evidence, 6),
+        "mean_evidence_signal": round(mean_evidence, 6),
         "consistency": round(consistency, 6),
         "risk_score": risk_score,
         "risk_label": risk_label,
