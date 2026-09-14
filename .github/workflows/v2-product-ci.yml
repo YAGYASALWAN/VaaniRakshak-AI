@@ -41,6 +41,7 @@ jobs:
           tests/test_v2_prepare_sea.py
           tests/test_v2_prepare_sea_end_to_end.py
           tests/test_v2_sea_retry_cache.py
+          tests/test_v2_data_status.py
           tests/test_v2_prepare_benchmark.py
           tests/test_v2_manifest_tools.py
           tests/test_v2_robustness.py
@@ -67,5 +68,6 @@ jobs:
           src/vaanirakshak/v2_server.py
           scripts/v2_manifest.py
           scripts/v2_preflight.py
+          scripts/v2_data_status.py
       - name: Validate V2 frontend JavaScript
         run: node --check frontend/v2/app.js
