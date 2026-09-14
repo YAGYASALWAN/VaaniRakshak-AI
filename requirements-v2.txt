@@ -1,0 +1,4 @@
+# VaaniRakshak V2 product-skeleton dependencies
+# Install the existing project requirements first if you also need V1/model tooling.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
