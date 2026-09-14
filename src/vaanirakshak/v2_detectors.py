@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import math
 from pathlib import Path
 import threading
 from typing import Any
@@ -22,6 +23,7 @@ LEGACY_SCHEMA = "english-cnn-v1"
 SUPPORTED_FRONTEND = "english-logmel-v1"
 RAW_FRONTEND = "raw-16khz-v1"
 MODEL_SAMPLES = 4 * MODEL_SAMPLE_RATE
+CALIBRATION_METHOD = "temperature-scaling-v1"
 
 
 def _file_sha256(path: Path) -> str:
@@ -44,6 +46,7 @@ class DetectorInfo:
     notice: str
     checkpoint: str | None = None
     checkpoint_sha256: str | None = None
+    calibration: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -57,6 +60,7 @@ class DetectorInfo:
             "notice": self.notice,
             "checkpoint": self.checkpoint,
             "checkpoint_sha256": self.checkpoint_sha256,
+            "calibration": self.calibration,
         }
 
 
@@ -68,6 +72,26 @@ def _validate_threshold(value: Any) -> float:
     if not np.isfinite(threshold) or not 0.0 < threshold < 1.0:
         raise ValueError("Checkpoint threshold must be finite and between 0 and 1")
     return threshold
+
+
+def _validate_calibration(state: dict, calibrated: bool) -> tuple[float, dict[str, Any] | None]:
+    calibration = state.get("calibration")
+    if not calibrated:
+        if calibration not in (None, {}):
+            raise ValueError("Checkpoint contains calibration metadata but calibrated_probability is false")
+        return 1.0, None
+
+    if not isinstance(calibration, dict):
+        raise ValueError("Calibrated checkpoint is missing calibration metadata")
+    if calibration.get("method") != CALIBRATION_METHOD:
+        raise ValueError(f"Unsupported calibration method: {calibration.get('method')!r}")
+    try:
+        temperature = float(calibration.get("temperature"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Calibration temperature must be numeric") from exc
+    if not math.isfinite(temperature) or temperature <= 0.0:
+        raise ValueError("Calibration temperature must be finite and positive")
+    return temperature, dict(calibration)
 
 
 class CheckpointDetector:
@@ -105,6 +129,7 @@ class CheckpointDetector:
                 raise ValueError(f"Unsupported V2 detector architecture: {architecture!r}")
             mode = "trained"
             calibrated = bool(state.get("calibrated_probability", False))
+            temperature, calibration = _validate_calibration(state, calibrated)
             notice = str(state.get("notice") or "V2 detector checkpoint. Risk aggregation is not proof of authenticity.")
         elif schema == LEGACY_SCHEMA:
             if not allow_legacy:
@@ -114,6 +139,8 @@ class CheckpointDetector:
             architecture = LEGACY_SCHEMA
             mode = "legacy-experimental"
             calibrated = False
+            temperature = 1.0
+            calibration = None
             notice = (
                 "Legacy V1 EnglishCNN connected only to validate V2 product integration. "
                 "Its scores are not a validated V2 authenticity assessment."
@@ -123,6 +150,8 @@ class CheckpointDetector:
 
         self.threshold = _validate_threshold(state.get("threshold"))
         self.calibrated_probability = calibrated
+        self.temperature = temperature
+        self.calibration = calibration
         self.mode = mode
         self.name = str(state.get("model_name") or path.parent.name or path.stem)
         self.schema = str(schema)
@@ -178,6 +207,7 @@ class CheckpointDetector:
             notice=self.notice,
             checkpoint=str(self.checkpoint_path),
             checkpoint_sha256=self.checkpoint_sha256,
+            calibration=self.calibration,
         )
 
     def score(self, samples: np.ndarray, sample_rate: int) -> float:
@@ -201,6 +231,8 @@ class CheckpointDetector:
                     attention_mask = self._torch.zeros_like(tensor, dtype=self._torch.long)
                     attention_mask[:, :count] = 1
                     logit = self._model(tensor, attention_mask=attention_mask)
+                if self.calibrated_probability:
+                    logit = logit / self.temperature
                 score = float(logit.sigmoid().item())
 
         if not np.isfinite(score) or not 0.0 <= score <= 1.0:
