@@ -39,6 +39,7 @@ jobs:
           tests/test_v2_training_smoke.py
           tests/test_v2_preflight.py
           tests/test_v2_prepare_sea.py
+          tests/test_v2_sea_retry_cache.py
           tests/test_v2_prepare_benchmark.py
           tests/test_v2_manifest_tools.py
           tests/test_v2_robustness.py
@@ -46,6 +47,7 @@ jobs:
       - name: Compile V2 Python modules and CLIs
         run: >-
           python -m py_compile
+          src/vaanirakshak/sea_transfer.py
           src/vaanirakshak/v2_audio.py
           src/vaanirakshak/v2_engine.py
           src/vaanirakshak/v2_detectors.py
