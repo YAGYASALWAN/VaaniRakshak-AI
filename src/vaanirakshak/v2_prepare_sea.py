@@ -9,7 +9,7 @@ WavLM training while retaining source provenance in a sidecar receipt.
 """
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter
 import hashlib
 import io
 import json
@@ -30,6 +30,9 @@ from vaanirakshak.v2_data_contract import AudioRecord, audit_manifest, write_jso
 
 SCHEMA = "vaanirakshak-v2-sea-raw-v1"
 SOURCE_SPLITS = {"train": "train", "validation": "dev", "evaluation": "test"}
+# Duplicate conflicts are resolved in this order. Evaluation data is protected;
+# a duplicate must be removed from training rather than from a held-out test set.
+SOURCE_SPLIT_PRIORITY = {"evaluation": 0, "validation": 1, "train": 2}
 
 
 def _hash_bytes(raw: bytes) -> str:
@@ -37,8 +40,18 @@ def _hash_bytes(raw: bytes) -> str:
 
 
 def _safe_id(value: str) -> str:
-    digest = hashlib.blake2s(value.encode("utf-8"), digest_size=10).hexdigest()
-    return digest
+    return hashlib.blake2s(value.encode("utf-8"), digest_size=10).hexdigest()
+
+
+def _evaluation_first(groups: list[dict]) -> list[dict]:
+    return sorted(
+        groups,
+        key=lambda group: (
+            SOURCE_SPLIT_PRIORITY.get(str(group.get("split")), 99),
+            str(group.get("path")),
+            int(group.get("row_group", 0)),
+        ),
+    )
 
 
 def _canonical_flac(raw: bytes) -> tuple[bytes, dict]:
@@ -141,8 +154,6 @@ def _scan_groups(root: Path, source: dict, client: Transfer, budget: int) -> dic
         save_json(cache, {"source": item, "groups": groups})
         candidates.extend(groups)
 
-    # Preserve the old allocation strategy across official splits, but use a V2
-    # specific budget. Transfer's global 30 GB hard ceiling remains authoritative.
     available = min(int(budget), MAX_BYTES - client.used - 1_000_000_000)
     if available <= 0:
         raise ValueError("No SEA transfer budget remains")
@@ -179,9 +190,6 @@ def _generator(row: dict, label: str) -> str | None:
         return None
     value = row.get("source_model")
     if value is None or not str(value).strip():
-        # V2 contract requires generator identity for unseen-generator auditing.
-        # Do not invent a unique generator from row_id because that would make the
-        # unseen-generator test meaningless.
         return None
     return f"SEA:{str(value).strip()}"
 
@@ -204,17 +212,18 @@ def prepare(
 
     plan = _scan_groups(root, source, client, budget)
     sources = {item["path"]: item for item in source["files"]}
-    audio_root = root / "audio" / "SEA-Spoof"
     receipts_root = root / "receipts"
     receipts_root.mkdir(parents=True, exist_ok=True)
 
     records: list[AudioRecord] = []
-    receipts: list[dict] = []
     exact_hash_owner: dict[str, str] = {}
     canonical_hash_owner: dict[str, str] = {}
     duplicate_counts = Counter()
 
-    for ordinal, group in enumerate(plan["groups"], 1):
+    # Process evaluation first so any exact/canonical duplicate later encountered
+    # in train/dev is discarded from the less-protected partition.
+    groups = _evaluation_first(list(plan["groups"]))
+    for ordinal, group in enumerate(groups, 1):
         receipt_path = receipts_root / f"{group['unit']}.json"
         if receipt_path.exists():
             saved = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -223,16 +232,15 @@ def prepare(
             for value in saved.get("records", []):
                 record = AudioRecord.from_dict(value["manifest"])
                 records.append(record)
-                receipts.append(value["receipt"])
                 exact_hash_owner[value["receipt"]["source_audio_sha256"]] = record.split
                 canonical_hash_owner[record.content_sha256] = record.split
-            print(f"Using completed V2 SEA group {ordinal}/{len(plan['groups'])}", flush=True)
+            print(f"Using completed V2 SEA group {ordinal}/{len(groups)}", flush=True)
             continue
 
         if shutil.disk_usage(root).free < 2_000_000_000:
             raise ValueError("Less than 2 GB free disk space remains; preparation stopped safely")
 
-        print(f"Materializing V2 SEA group {ordinal}/{len(plan['groups'])}", flush=True)
+        print(f"Materializing V2 SEA group {ordinal}/{len(groups)}", flush=True)
         completed = []
         with RangeFile(client, sources[group["path"]]) as remote:
             parquet = pq.ParquetFile(remote, pre_buffer=False)
@@ -263,10 +271,6 @@ def prepare(
 
                     generator_id = _generator(row, label)
                     if label == "spoof" and generator_id is None:
-                        # A spoof with unknown generator is still valuable for the
-                        # ordinary benchmark, but it cannot satisfy the V2 manifest
-                        # contract used for unseen-generator claims. Exclude rather
-                        # than silently inventing provenance.
                         duplicate_counts[f"missing_generator_{split}"] += 1
                         continue
 
@@ -308,7 +312,6 @@ def prepare(
                     exact_hash_owner[source_hash] = split
                     canonical_hash_owner[canonical_hash] = split
                     records.append(record)
-                    receipts.append(receipt)
                     completed.append({"manifest": record.as_dict(), "receipt": receipt})
             parquet.close()
         save_json(receipt_path, {"group": group, "records": completed})
@@ -328,12 +331,13 @@ def prepare(
             "audit_warnings": list(audit.warnings),
             "filtered": dict(duplicate_counts),
             "transfer_reserved_bytes": client.used,
+            "duplicate_priority": ["test", "dev", "train"],
             "canonical_audio": "mono 16 kHz FLAC PCM_16",
             "limitations": [
                 "Official SEA source split roles are retained as train/dev/test.",
                 "Generator identity comes from source_model and may be absent for some spoof rows; those rows are excluded.",
-                "speaker_or_voice semantics depend on the upstream source and are retained only as audit metadata.",
-                "This preparation does not by itself establish unseen-generator separation; use v2_data_contract audits for that scenario.",
+                "Known speaker IDs are required to be split-disjoint by the V2 manifest audit; missing IDs are not invented.",
+                "This preparation does not by itself establish unseen-generator separation; use the unseen-generator audit for that scenario.",
             ],
         },
     )
