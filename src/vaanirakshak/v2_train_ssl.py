@@ -4,11 +4,9 @@ This script trains ONLY on manifest split=train and selects model/threshold ONLY
 from split=dev. It never evaluates or tunes against split=test. Final test and
 cross-dataset evaluation belong in a separate frozen-checkpoint command.
 
-Example:
-    python -m vaanirakshak.v2_train_ssl \
-        --manifest data/v2/train_manifest.jsonl \
-        --output models/v2_wavlm_run \
-        --device cuda
+A run writes ``last.pt`` after each completed epoch. Use ``--resume`` with the
+same output directory to restore model, optimizer, AMP, sampler and RNG state.
+Resume is refused if the manifest or training contract changed.
 """
 from __future__ import annotations
 
@@ -37,6 +35,7 @@ from vaanirakshak.v2_ssl_model import ARCHITECTURE, DEFAULT_BACKBONE, WavLMAntiS
 
 
 WINDOW_SAMPLES = 4 * MODEL_SAMPLE_RATE
+TRAINING_STATE_SCHEMA = "vaanirakshak-v2-training-state-v1"
 
 
 def _resolve_audio_ref(audio_ref: str, manifest_dir: Path) -> Path:
@@ -111,11 +110,12 @@ class ManifestAudioDataset(Dataset):
         return values, mask, label
 
 
-def _balanced_sampler(dataset: ManifestAudioDataset, seed: int) -> WeightedRandomSampler:
+def _balanced_sampler(dataset: ManifestAudioDataset, seed: int) -> tuple[WeightedRandomSampler, torch.Generator]:
     groups = Counter((record.dataset, record.label) for record in dataset.records)
     weights = [1.0 / groups[(record.dataset, record.label)] for record in dataset.records]
     generator = torch.Generator().manual_seed(seed)
-    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True, generator=generator)
+    sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True, generator=generator)
+    return sampler, generator
 
 
 def _set_backbone_trainable(model: WavLMAntiSpoof, trainable: bool) -> None:
@@ -167,6 +167,49 @@ def _write_json(path: Path, value) -> None:
     temporary.replace(path)
 
 
+def _training_contract(
+    *,
+    backbone_id: str,
+    epochs: int,
+    batch_size: int,
+    gradient_accumulation_steps: int,
+    gradient_checkpointing: bool,
+    head_only_epochs: int,
+    backbone_lr: float,
+    head_lr: float,
+    weight_decay: float,
+    max_dev_fpr: float,
+    seed: int,
+) -> dict:
+    return {
+        "architecture": ARCHITECTURE,
+        "backbone_id": backbone_id,
+        "epochs": int(epochs),
+        "batch_size": int(batch_size),
+        "gradient_accumulation_steps": int(gradient_accumulation_steps),
+        "gradient_checkpointing": bool(gradient_checkpointing),
+        "head_only_epochs": int(head_only_epochs),
+        "backbone_lr": float(backbone_lr),
+        "head_lr": float(head_lr),
+        "weight_decay": float(weight_decay),
+        "max_dev_fpr": float(max_dev_fpr),
+        "seed": int(seed),
+    }
+
+
+def _validate_resume_state(state: dict, *, contract: dict, fingerprint: str) -> None:
+    if not isinstance(state, dict) or state.get("schema") != TRAINING_STATE_SCHEMA:
+        raise ValueError("last.pt is not a VaaniRakshak V2 resumable training state")
+    if state.get("manifest_fingerprint") != fingerprint:
+        raise ValueError("Resume manifest differs from the saved training run")
+    if state.get("training_contract") != contract:
+        raise ValueError("Resume hyperparameters/backbone differ from the saved training run")
+    required = {"model", "optimizer", "scaler", "epoch", "history", "best_eer", "torch_rng", "sampler_rng"}
+    missing = sorted(required - set(state))
+    if missing:
+        raise ValueError(f"Resume state is missing required fields: {missing}")
+
+
 def run(
     manifest: Path,
     output: Path,
@@ -183,6 +226,7 @@ def run(
     weight_decay: float = 1e-4,
     max_dev_fpr: float = 0.05,
     seed: int = 42,
+    resume: bool = False,
 ) -> Path:
     if device == "cuda" and not torch.cuda.is_available():
         raise ValueError("CUDA requested but unavailable")
@@ -202,6 +246,16 @@ def run(
     manifest = manifest.resolve()
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    run_config_path = output / "run_config.json"
+    last_path = output / "last.pt"
+    best_path = output / "best.pt"
+
+    if resume:
+        if not run_config_path.is_file() or not last_path.is_file():
+            raise ValueError("--resume requires existing run_config.json and last.pt in the output directory")
+    elif run_config_path.exists() or last_path.exists() or best_path.exists():
+        raise ValueError("Output directory already contains a V2 training run; use a new directory or --resume")
+
     records = load_jsonl(manifest)
     audit = audit_manifest(records)
     audit.raise_for_errors()
@@ -214,10 +268,31 @@ def run(
     if {record.label for record in dev_records} != {"bonafide", "spoof"}:
         raise ValueError("Development split must contain bonafide and spoof records")
 
+    fingerprint = manifest_fingerprint(records)
+    contract = _training_contract(
+        backbone_id=backbone_id,
+        epochs=epochs,
+        batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        gradient_checkpointing=gradient_checkpointing,
+        head_only_epochs=head_only_epochs,
+        backbone_lr=backbone_lr,
+        head_lr=head_lr,
+        weight_decay=weight_decay,
+        max_dev_fpr=max_dev_fpr,
+        seed=seed,
+    )
+
     train_data = ManifestAudioDataset(records, manifest.parent, "train", seed=seed)
     dev_data = ManifestAudioDataset(records, manifest.parent, "dev", seed=seed)
-    sampler = _balanced_sampler(train_data, seed)
-    train_loader = DataLoader(train_data, batch_size=batch_size, sampler=sampler, num_workers=0, pin_memory=device == "cuda")
+    sampler, sampler_generator = _balanced_sampler(train_data, seed)
+    train_loader = DataLoader(
+        train_data,
+        batch_size=batch_size,
+        sampler=sampler,
+        num_workers=0,
+        pin_memory=device == "cuda",
+    )
     dev_loader = DataLoader(dev_data, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=device == "cuda")
 
     model = WavLMAntiSpoof.from_pretrained(backbone_id).to(device)
@@ -228,44 +303,59 @@ def run(
         else:
             raise ValueError("Selected WavLM backbone does not support gradient checkpointing")
 
-    optimizer = torch.optim.AdamW(
-        _parameter_groups(model, backbone_lr, head_lr),
-        weight_decay=weight_decay,
-    )
+    optimizer = torch.optim.AdamW(_parameter_groups(model, backbone_lr, head_lr), weight_decay=weight_decay)
     scaler = torch.amp.GradScaler("cuda", enabled=device == "cuda")
 
-    run_name = f"wavlm_v2_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-    fingerprint = manifest_fingerprint(records)
     history: list[dict] = []
     best_eer = math.inf
-    best_path = output / "best.pt"
+    start_epoch = 1
 
-    _write_json(
-        output / "run_config.json",
-        {
+    if resume:
+        saved_config = json.loads(run_config_path.read_text(encoding="utf-8"))
+        if saved_config.get("manifest_fingerprint") != fingerprint:
+            raise ValueError("run_config manifest fingerprint differs from the requested manifest")
+        if saved_config.get("training_contract") != contract:
+            raise ValueError("run_config training contract differs from the requested resume configuration")
+        run_name = str(saved_config.get("run_name") or "")
+        if not run_name:
+            raise ValueError("run_config is missing run_name")
+
+        state = torch.load(last_path, map_location="cpu", weights_only=True)
+        _validate_resume_state(state, contract=contract, fingerprint=fingerprint)
+        model.load_state_dict(state["model"])
+        optimizer.load_state_dict(state["optimizer"])
+        scaler.load_state_dict(state["scaler"])
+        history = list(state["history"])
+        best_eer = float(state["best_eer"])
+        start_epoch = int(state["epoch"]) + 1
+        torch.set_rng_state(state["torch_rng"])
+        sampler_generator.set_state(state["sampler_rng"])
+        if device == "cuda" and state.get("cuda_rng"):
+            torch.cuda.set_rng_state_all(state["cuda_rng"])
+        print(f"Resuming {run_name} from completed epoch {start_epoch - 1}/{epochs}", flush=True)
+    else:
+        run_name = f"wavlm_v2_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        run_config = {
             "run_name": run_name,
-            "architecture": ARCHITECTURE,
-            "backbone_id": backbone_id,
-            "epochs": epochs,
-            "batch_size": batch_size,
-            "gradient_accumulation_steps": gradient_accumulation_steps,
+            **contract,
             "effective_batch_size": batch_size * gradient_accumulation_steps,
-            "gradient_checkpointing": gradient_checkpointing,
-            "head_only_epochs": head_only_epochs,
-            "backbone_lr": backbone_lr,
-            "head_lr": head_lr,
-            "weight_decay": weight_decay,
-            "max_dev_fpr": max_dev_fpr,
-            "seed": seed,
             "manifest": str(manifest),
             "manifest_fingerprint": fingerprint,
             "audit_counts": audit.counts,
+            "training_contract": contract,
             "threshold_policy": "maximize spoof recall subject to development-set FPR budget",
             "test_data_used_during_training": False,
-        },
-    )
+            "resume_granularity": "last completed epoch",
+        }
+        _write_json(run_config_path, run_config)
 
-    for epoch in range(1, epochs + 1):
+    if start_epoch > epochs:
+        if not best_path.is_file():
+            raise RuntimeError("Resumed run is complete but best.pt is missing")
+        print(f"Training already completed through epoch {epochs}; using {best_path}", flush=True)
+        return best_path
+
+    for epoch in range(start_epoch, epochs + 1):
         train_data.set_epoch(epoch)
         _set_backbone_trainable(model, epoch > head_only_epochs)
         model.train()
@@ -349,6 +439,24 @@ def run(
             }
             _atomic_torch_save(checkpoint, best_path)
 
+        # Resume starts from the next epoch. We intentionally checkpoint only at
+        # epoch boundaries so a partially completed epoch is rerun consistently.
+        training_state = {
+            "schema": TRAINING_STATE_SCHEMA,
+            "manifest_fingerprint": fingerprint,
+            "training_contract": contract,
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scaler": scaler.state_dict(),
+            "epoch": epoch,
+            "history": history,
+            "best_eer": best_eer,
+            "torch_rng": torch.get_rng_state(),
+            "cuda_rng": torch.cuda.get_rng_state_all() if device == "cuda" else [],
+            "sampler_rng": sampler_generator.get_state(),
+        }
+        _atomic_torch_save(training_state, last_path)
+
     if not best_path.is_file():
         raise RuntimeError("Training completed without producing a best checkpoint")
     return best_path
@@ -370,6 +478,7 @@ def main() -> None:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--max-dev-fpr", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--resume", action="store_true", help="Resume the last completed epoch in --output.")
     args = parser.parse_args()
     path = run(
         args.manifest,
@@ -386,6 +495,7 @@ def main() -> None:
         weight_decay=args.weight_decay,
         max_dev_fpr=args.max_dev_fpr,
         seed=args.seed,
+        resume=args.resume,
     )
     print(f"Best V2 checkpoint: {path}", flush=True)
 
