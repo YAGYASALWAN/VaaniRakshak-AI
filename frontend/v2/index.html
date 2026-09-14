@@ -21,7 +21,7 @@
     <section class="hero">
       <p class="eyebrow">CALL SECURITY ASSISTANT</p>
       <h1>Analyze the call, not just a file.</h1>
-      <p class="lede">V2 streams microphone audio in short windows, accumulates evidence across the conversation and produces a call-level security verdict.</p>
+      <p class="lede">V2 streams microphone audio, quality-gates speech, analyzes overlapping windows and accumulates evidence into a call-level security assessment.</p>
     </section>
 
     <section class="grid">
@@ -38,9 +38,13 @@
         <div class="risk-track"><div id="risk-fill" class="risk-fill"></div></div>
 
         <div class="metrics">
-          <div><span>Speech streamed</span><strong id="duration">0.0 s</strong></div>
+          <div><span>Call audio</span><strong id="duration">0.0 s</strong></div>
+          <div><span>Usable speech</span><strong id="usable-speech">0.0 s</strong></div>
+          <div><span>Windows seen</span><strong id="windows-seen">0</strong></div>
           <div><span>Segments analyzed</span><strong id="segments">0</strong></div>
+          <div><span>Quality-skipped</span><strong id="skipped">0</strong></div>
           <div><span>Suspicious segments</span><strong id="suspicious">0</strong></div>
+          <div><span>Window / hop</span><strong id="windowing">4s / 2s</strong></div>
           <div><span>Model mode</span><strong id="mode">Checking</strong></div>
         </div>
 
@@ -54,12 +58,12 @@
 
       <aside class="card evidence-card">
         <p class="eyebrow">EVIDENCE TIMELINE</p>
-        <h2>Segment history</h2>
-        <p class="small">Each block represents one analyzed audio window. The final verdict uses all available windows.</p>
+        <h2>Window history</h2>
+        <p class="small">Each block is one overlapping audio window. Gray windows were rejected by the quality/speech gate and were not sent to the detector.</p>
         <div id="timeline" class="timeline" aria-label="Analysis timeline">
-          <div class="empty">No segments yet.</div>
+          <div class="empty">No windows yet.</div>
         </div>
-        <div class="legend"><span><i class="low"></i>Lower score</span><span><i class="high"></i>Suspicious</span></div>
+        <div class="legend"><span><i class="low"></i>Lower score</span><span><i class="high"></i>Suspicious</span><span><i class="skipped"></i>Skipped</span></div>
       </aside>
     </section>
 
