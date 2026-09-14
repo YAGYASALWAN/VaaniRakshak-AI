@@ -1,9 +1,9 @@
 """VaaniRakshak V2 streaming analysis primitives.
 
 The product/session logic remains independent of the anti-spoofing model. Incoming
-browser PCM is framed with overlap, quality-gated, normalized to 16 kHz and only
-then passed to a detector. The default detector is a deterministic mock; its
-outputs MUST NOT be presented as authenticity findings.
+browser PCM is framed with overlap, speech/quality-gated, normalized to 16 kHz and
+only then passed to a detector. The detector and speech gate are separate pluggable
+components.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from typing import Iterable, Protocol
 
 import numpy as np
 
-from vaanirakshak.v2_audio import AudioQuality, MODEL_SAMPLE_RATE, prepare_model_window
+from vaanirakshak.v2_audio import AudioQuality, MODEL_SAMPLE_RATE, SpeechGate, prepare_model_window
 
 
 WINDOW_SECONDS = 4.0
@@ -139,6 +139,7 @@ class WindowResult:
 class StreamingSession:
     detector: Detector
     sample_rate: int
+    speech_gate: SpeechGate | None = None
     created_at: float = field(default_factory=time.monotonic)
     total_samples: int = 0
     buffer_start_sample: int = 0
@@ -188,7 +189,11 @@ class StreamingSession:
         return emitted
 
     def _analyze_window(self, samples: list[int], start_sample: int) -> WindowResult:
-        model_wave, quality = prepare_model_window(samples, self.sample_rate)
+        model_wave, quality = prepare_model_window(
+            samples,
+            self.sample_rate,
+            speech_gate=self.speech_gate,
+        )
         score: float | None = None
         inference_ms: float | None = None
 
@@ -294,12 +299,14 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
     top_regions = sorted(analyzed, key=lambda item: float(item.synthetic_score), reverse=True)[:5]
     top_regions.sort(key=lambda item: item.start_seconds)
     inference_values = [item.inference_ms for item in analyzed if item.inference_ms is not None]
+    gate_names = sorted({item.quality.speech_gate for item in items})
 
     detector_notice = str(getattr(detector, "notice", "Risk is an aggregated security signal and is not proof of authenticity."))
     return {
         "analysis_mode": detector.mode,
         "model": detector.name,
         "calibrated_probability": bool(getattr(detector, "calibrated_probability", False)),
+        "speech_gate": gate_names[0] if len(gate_names) == 1 else gate_names,
         "duration_seconds": round(duration_seconds, 3),
         "usable_speech_seconds": round(usable_speech_seconds, 3),
         "windows_seen": len(items),
