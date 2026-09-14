@@ -34,9 +34,9 @@ def operating_points(labels: Iterable[int], scores: Iterable[float]) -> list[dic
     positives = int(y.sum())
     negatives = int(len(y) - positives)
 
-    # A finite threshold just above the largest score represents the legitimate
-    # "reject everything as spoof" operating point with FPR=TPR=0. Keeping it
-    # finite lets max-FPR threshold selection remain well-defined on small dev sets.
+    # For metric curves, a finite threshold just above the largest score represents
+    # the legitimate reject-all operating point with FPR=TPR=0. Threshold selection
+    # later separately enforces the deployable detector range (0, 1).
     reject_all_threshold = float(np.nextafter(s[0], np.inf))
     points = [
         {
@@ -116,9 +116,16 @@ def eer(labels: Iterable[int], scores: Iterable[float]) -> tuple[float, float]:
 def threshold_for_max_fpr(labels: Iterable[int], scores: Iterable[float], max_fpr: float = 0.05) -> float:
     if not 0.0 <= max_fpr < 1.0:
         raise ValueError("max_fpr must be in [0, 1)")
-    points = [p for p in operating_points(labels, scores) if p["fpr"] <= max_fpr]
+    points = [
+        p
+        for p in operating_points(labels, scores)
+        if p["fpr"] <= max_fpr and 0.0 < float(p["threshold"]) < 1.0
+    ]
     if not points:
-        raise ValueError("No threshold satisfies the requested FPR")
+        raise ValueError(
+            "Requested FPR budget is not achievable with a deployable threshold in (0, 1); "
+            "do not silently relax the development-set policy"
+        )
     # Security-oriented operating point: within the allowed bonafide false-positive
     # budget, maximize spoof recall; on a tie choose the higher threshold.
     best = max(points, key=lambda p: (float(p["tpr"]), float(p["threshold"])))
