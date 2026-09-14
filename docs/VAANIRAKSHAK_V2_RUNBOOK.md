@@ -29,6 +29,28 @@ python -m pip install -r requirements-v2-train.txt
 
 Keep your existing CUDA-compatible PyTorch/torchaudio pair if it is already working. Do not blindly replace it with a CPU build.
 
+### Run preflight before an expensive data/training run
+
+```powershell
+python scripts/v2_preflight.py `
+  --data-root data/v2_sea_en `
+  --budget-gb 26 `
+  --output reports/v2_preflight.json
+```
+
+The preflight downloads no dataset audio. It checks:
+
+- the pinned SEA-Spoof repository/revision configuration;
+- conservative disk headroom for the planned payload;
+- CUDA availability and visible GPU information;
+- Python, PyTorch, torchaudio and Transformers versions;
+- the current Hugging Face login;
+- access to the exact pinned gated SEA-Spoof revision.
+
+For data-preparation/debugging on a machine without CUDA, add `--allow-cpu`. To check only local state without contacting Hugging Face, add `--offline`.
+
+Do not begin the large preparation run if preflight fails.
+
 ## 1. Product-only smoke test
 
 No trained model is required for this step. The server deliberately uses the mock detector when no checkpoint is configured, but the live speech gate is real WebRTC VAD by default.
@@ -85,11 +107,13 @@ data/v2_sea_en/
   manifest.jsonl
   v2_sea_plan.json
   v2_sea_audit.json
-  transfer_state.json
+  transfer.json
   audio/SEA-Spoof/...
   metadata/...
   receipts/...
 ```
+
+`transfer.json` is the persistent byte-reservation ledger used by the bounded SEA reader. Do not delete it to bypass the transfer ceiling during the same preparation run.
 
 The builder:
 
@@ -141,6 +165,8 @@ python -m vaanirakshak.v2_train_ssl `
 Training uses only `split=train`.
 
 Checkpoint selection and the operating threshold use only `split=dev`.
+
+The threshold policy maximizes spoof recall subject to the configured development-set false-positive budget. If that budget cannot be achieved by any deployable threshold in `(0,1)`, training fails explicitly rather than silently relaxing the policy or writing an unloadable checkpoint.
 
 The training command never constructs or reads the test dataset.
 
@@ -369,6 +395,10 @@ Open:
 
 The status panel should now report a trained detector and `webrtc-vad-m2` rather than MOCK/energy mode.
 
+A trained detector exposes a SHA-256 fingerprint of the exact loaded checkpoint. The browser audit export preserves that fingerprint along with per-window evidence and latency, while excluding raw microphone audio.
+
+Because V2 advances by a 2-second hop, the live dashboard also compares observed mean per-window processing time against a 2000 ms hop budget. This is an observed scheduling signal, not a worst-case concurrency guarantee.
+
 If checkpoint or speech-gate loading fails, the V2 server deliberately enters a configuration-error state. It does **not** silently substitute the mock detector or another speech gate.
 
 ## 12. Legacy V1 checkpoint integration (debug only)
@@ -409,4 +439,4 @@ A checkpoint should not be promoted to the SIH-facing detector until we have, at
 - Detector scores are explicitly marked uncalibrated unless a future checkpoint provides validated calibration.
 - Controlled white-noise robustness is not equivalent to real environmental-noise validation.
 - SEA-Spoof use is subject to its approved non-commercial academic research terms.
-- GitHub Actions status should be checked separately; the existence of CI configuration is not itself evidence that a remote run passed.
+- A green CI run validates code/tests on the CI environment; it does not substitute for gated-dataset preparation or GPU model training.
