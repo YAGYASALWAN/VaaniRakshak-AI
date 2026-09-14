@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VaaniRakshak V2 | Live voice security</title>
+  <meta name="description" content="VaaniRakshak V2 live synthetic voice risk analysis prototype.">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="brand">VaaniRakshak <span>V2</span></div>
+      <div class="subtitle">LIVE VOICE SECURITY</div>
+    </div>
+    <div id="connection-pill" class="pill">Connecting</div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="eyebrow">CALL SECURITY ASSISTANT</p>
+      <h1>Analyze the call, not just a file.</h1>
+      <p class="lede">V2 streams microphone audio in short windows, accumulates evidence across the conversation and produces a call-level security verdict.</p>
+    </section>
+
+    <section class="grid">
+      <article class="card live-card">
+        <div class="card-heading">
+          <div><p class="eyebrow">LIVE SESSION</p><h2 id="call-state">Ready</h2></div>
+          <div id="timer" class="timer">00:00</div>
+        </div>
+
+        <div class="risk-wrap">
+          <div id="risk-score" class="risk-score">--</div>
+          <div><div id="risk-label" class="risk-label">No evidence yet</div><div class="small">Aggregated call risk</div></div>
+        </div>
+        <div class="risk-track"><div id="risk-fill" class="risk-fill"></div></div>
+
+        <div class="metrics">
+          <div><span>Speech streamed</span><strong id="duration">0.0 s</strong></div>
+          <div><span>Segments analyzed</span><strong id="segments">0</strong></div>
+          <div><span>Suspicious segments</span><strong id="suspicious">0</strong></div>
+          <div><span>Model mode</span><strong id="mode">Checking</strong></div>
+        </div>
+
+        <div class="controls">
+          <button id="start" class="primary" type="button" disabled>Start analysis</button>
+          <button id="stop" class="danger" type="button" disabled>End call & generate verdict</button>
+        </div>
+        <p id="message" class="message" role="status" aria-live="polite">Checking V2 backend…</p>
+        <p id="notice" class="notice"></p>
+      </article>
+
+      <aside class="card evidence-card">
+        <p class="eyebrow">EVIDENCE TIMELINE</p>
+        <h2>Segment history</h2>
+        <p class="small">Each block represents one analyzed audio window. The final verdict uses all available windows.</p>
+        <div id="timeline" class="timeline" aria-label="Analysis timeline">
+          <div class="empty">No segments yet.</div>
+        </div>
+        <div class="legend"><span><i class="low"></i>Lower score</span><span><i class="high"></i>Suspicious</span></div>
+      </aside>
+    </section>
+
+    <section id="final-card" class="card final-card" hidden>
+      <p class="eyebrow">FINAL CALL REPORT</p>
+      <div class="final-grid">
+        <div>
+          <div id="final-score" class="final-score">--</div>
+          <div id="final-risk" class="risk-label"></div>
+        </div>
+        <div>
+          <h2 id="final-verdict">Verdict pending</h2>
+          <p id="final-copy"></p>
+        </div>
+      </div>
+      <div id="regions" class="regions"></div>
+      <p id="final-notice" class="notice"></p>
+    </section>
+  </main>
+</body>
+</html>
