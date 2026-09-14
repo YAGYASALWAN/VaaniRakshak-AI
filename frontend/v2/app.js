@@ -105,6 +105,17 @@ function closeSocket() {
   ws = null;
 }
 
+async function failActiveSession(text) {
+  setMessage(text, true);
+  setConnection('Stream error');
+  el('call-state').textContent = 'Session stopped';
+  await cleanupAudio();
+  closeSocket();
+  stopping = false;
+  el('start').disabled = false;
+  el('stop').disabled = true;
+}
+
 async function loadStatus() {
   try {
     const response = await fetch('/api/v2/status', { cache: 'no-store' });
@@ -145,7 +156,13 @@ async function startAnalysis() {
     ws.binaryType = 'arraybuffer';
 
     ws.onmessage = async event => {
-      const data = JSON.parse(event.data);
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        await failActiveSession('Backend returned an invalid streaming message.');
+        return;
+      }
       if (data.type === 'connected') return;
       if (data.type === 'started') {
         el('call-state').textContent = 'Call in progress';
@@ -175,16 +192,15 @@ async function startAnalysis() {
         stopping = false;
         return;
       }
-      if (data.type === 'error') throw new Error(data.message || 'Streaming analysis error.');
+      if (data.type === 'error') {
+        await failActiveSession(data.message || 'Streaming analysis error.');
+      }
     };
 
     ws.onerror = () => setMessage('WebSocket connection error. Check the backend terminal.', true);
     ws.onclose = async event => {
       if (!stopping && el('call-state').textContent === 'Call in progress' && event.code !== 1000) {
-        setMessage('Streaming connection closed unexpectedly.', true);
-        await cleanupAudio();
-        el('start').disabled = false;
-        el('stop').disabled = true;
+        await failActiveSession('Streaming connection closed unexpectedly.');
       }
     };
 
