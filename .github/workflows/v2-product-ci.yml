@@ -33,6 +33,7 @@ jobs:
           tests/test_v2_metrics.py
           tests/test_v2_calibration.py
           tests/test_v2_calibrate_command.py
+          tests/test_v2_evaluate_report.py
           tests/test_v2_ssl_model.py
           tests/test_v2_training_state.py
           tests/test_v2_training_smoke.py
