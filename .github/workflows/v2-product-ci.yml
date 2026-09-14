@@ -31,6 +31,7 @@ jobs:
           tests/test_v2_data_contract.py
           tests/test_v2_data_contract_speakers.py
           tests/test_v2_metrics.py
+          tests/test_v2_calibration.py
           tests/test_v2_ssl_model.py
           tests/test_v2_training_state.py
           tests/test_v2_training_smoke.py
@@ -49,6 +50,7 @@ jobs:
           src/vaanirakshak/v2_data_contract.py
           src/vaanirakshak/v2_manifest_tools.py
           src/vaanirakshak/v2_metrics.py
+          src/vaanirakshak/v2_calibration.py
           src/vaanirakshak/v2_ssl_model.py
           src/vaanirakshak/v2_train_ssl.py
           src/vaanirakshak/v2_evaluate.py
