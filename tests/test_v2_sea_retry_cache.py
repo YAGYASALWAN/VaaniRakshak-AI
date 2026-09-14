@@ -97,6 +97,49 @@ class V2SEARetryCacheTests(unittest.TestCase):
             self.assertEqual(second.used, 8, "refetch remains charged by the fail-closed transfer ledger")
             second.end_scope(scope, clear=True)
 
+    def test_incomplete_cache_pair_is_dropped_before_refetch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            item = {"path": "data/train/example.parquet", "size": 10}
+            scope = "v2-sea-row-group:test-incomplete"
+
+            first = Transfer(root, "unit-test-token")
+            first.opener = _Opener(b"abcd", "bytes 0-3/10")
+            first.begin_scope(scope)
+            self.assertEqual(first.fetch(item, 0, 4), b"abcd")
+            first.end_scope(scope, clear=False)
+
+            cache_dir = first._scope_directory(scope)
+            metadata_files = [path for path in cache_dir.glob("*.json") if path.name != "scope.json"]
+            self.assertEqual(len(metadata_files), 1)
+            metadata_files[0].unlink()  # simulate crash between data and metadata commits
+
+            second = Transfer(root, "unit-test-token")
+            opener = _Opener(b"abcd", "bytes 0-3/10")
+            second.opener = opener
+            second.begin_scope(scope)
+            self.assertEqual(second.fetch(item, 0, 4), b"abcd")
+            self.assertEqual(opener.calls, 1)
+            self.assertEqual(second.used, 8)
+            second.end_scope(scope, clear=True)
+
+    def test_scope_reopen_removes_stale_temporary_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            scope = "v2-sea-row-group:test-temp"
+            first = Transfer(root, "unit-test-token")
+            first.begin_scope(scope)
+            cache_dir = first._scope_directory(scope)
+            first.end_scope(scope, clear=False)
+            stale = cache_dir / "orphan.bin.tmp"
+            stale.write_bytes(b"partial")
+            self.assertTrue(stale.exists())
+
+            second = Transfer(root, "unit-test-token")
+            second.begin_scope(scope)
+            self.assertFalse(stale.exists())
+            second.end_scope(scope, clear=True)
+
     def test_nested_retry_scopes_are_refused(self):
         with tempfile.TemporaryDirectory() as folder:
             transfer = Transfer(Path(folder), "unit-test-token")
