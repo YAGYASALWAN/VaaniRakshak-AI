@@ -92,6 +92,7 @@ class _Info:
 
 class _FakeDetector:
     threshold = 0.5
+    calibrated_probability = False
     info = _Info()
 
     def __init__(self, checkpoint, device="cpu"):
@@ -105,7 +106,7 @@ class _FakeDetector:
 
 
 class RobustnessEvaluatorTests(unittest.TestCase):
-    def test_evaluator_uses_one_frozen_threshold_for_all_conditions(self):
+    def test_evaluator_uses_one_frozen_threshold_and_reports_calibration_drift(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             audio = root / "audio"
@@ -159,10 +160,21 @@ class RobustnessEvaluatorTests(unittest.TestCase):
                 )
 
             self.assertEqual(report["threshold_source"], "frozen checkpoint; unchanged for every robustness condition")
+            self.assertEqual(report["recording_aggregation"], "median_logit")
+            self.assertEqual(report["score_semantics"], "uncalibrated_detector_score")
             self.assertEqual(report["conditions"]["clean"]["threshold"], 0.5)
             self.assertEqual(report["conditions"]["quietened"]["threshold"], 0.5)
             self.assertEqual(report["conditions"]["clean"]["f1"], 1.0)
             self.assertLess(report["conditions"]["quietened"]["f1"], 1.0)
+
+            clean_probability = report["conditions"]["clean"]["probability_quality"]
+            quiet_probability = report["conditions"]["quietened"]["probability_quality"]
+            for metric in ("nll", "brier", "ece"):
+                self.assertIn(metric, clean_probability)
+                self.assertIn(metric, quiet_probability)
+                self.assertIn(f"delta_{metric}", report["degradation_vs_clean"]["quietened"])
+            self.assertFalse(clean_probability["declared_calibrated_probability"])
+
             self.assertTrue((root / "report" / "robustness.json").is_file())
             self.assertTrue((root / "report" / "robustness_scores.jsonl").is_file())
 
