@@ -34,9 +34,13 @@ def operating_points(labels: Iterable[int], scores: Iterable[float]) -> list[dic
     positives = int(y.sum())
     negatives = int(len(y) - positives)
 
+    # A finite threshold just above the largest score represents the legitimate
+    # "reject everything as spoof" operating point with FPR=TPR=0. Keeping it
+    # finite lets max-FPR threshold selection remain well-defined on small dev sets.
+    reject_all_threshold = float(np.nextafter(s[0], np.inf))
     points = [
         {
-            "threshold": float("inf"),
+            "threshold": reject_all_threshold,
             "tp": 0,
             "fp": 0,
             "tn": negatives,
@@ -86,7 +90,9 @@ def roc_auc(labels: Iterable[int], scores: Iterable[float]) -> float:
     points = operating_points(labels, scores)
     fpr = np.asarray([p["fpr"] for p in points], dtype=np.float64)
     tpr = np.asarray([p["tpr"] for p in points], dtype=np.float64)
-    return float(np.trapezoid(tpr, fpr))
+    widths = np.diff(fpr)
+    heights = (tpr[:-1] + tpr[1:]) * 0.5
+    return float(np.sum(widths * heights))
 
 
 def average_precision(labels: Iterable[int], scores: Iterable[float]) -> float:
@@ -102,8 +108,7 @@ def average_precision(labels: Iterable[int], scores: Iterable[float]) -> float:
 
 def eer(labels: Iterable[int], scores: Iterable[float]) -> tuple[float, float]:
     points = operating_points(labels, scores)
-    finite = [point for point in points if math.isfinite(point["threshold"])]
-    best = min(finite, key=lambda p: abs(float(p["fpr"]) - float(p["fnr"])))
+    best = min(points, key=lambda p: abs(float(p["fpr"]) - float(p["fnr"])))
     value = (float(best["fpr"]) + float(best["fnr"])) / 2.0
     return value, float(best["threshold"])
 
@@ -111,9 +116,9 @@ def eer(labels: Iterable[int], scores: Iterable[float]) -> tuple[float, float]:
 def threshold_for_max_fpr(labels: Iterable[int], scores: Iterable[float], max_fpr: float = 0.05) -> float:
     if not 0.0 <= max_fpr < 1.0:
         raise ValueError("max_fpr must be in [0, 1)")
-    points = [p for p in operating_points(labels, scores) if math.isfinite(p["threshold"]) and p["fpr"] <= max_fpr]
+    points = [p for p in operating_points(labels, scores) if p["fpr"] <= max_fpr]
     if not points:
-        raise ValueError("No finite threshold satisfies the requested FPR")
+        raise ValueError("No threshold satisfies the requested FPR")
     # Security-oriented operating point: within the allowed bonafide false-positive
     # budget, maximize spoof recall; on a tie choose the higher threshold.
     best = max(points, key=lambda p: (float(p["tpr"]), float(p["threshold"])))
