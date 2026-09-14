@@ -35,7 +35,7 @@ Thumbs.db
 logs/
 *.log
 
-# Model checkpoints (future milestones)
+# Model checkpoints
 models/
 checkpoints/
 *.pt
@@ -43,6 +43,9 @@ checkpoints/
 *.ckpt
 *.onnx
 *.bin
+
+# Runtime/generated reports — machine- and experiment-specific
+reports/
 
 # Raw and processed datasets — never commit audio or manifests
 data/raw/**
@@ -54,6 +57,12 @@ data/processed/**
 data/manifests/**
 !data/manifests/.gitkeep
 !data/manifests/**/.gitkeep
+
+# V2 generated datasets, scenarios, benchmark materializations and retry state
+data/v2_sea_en/
+data/v2_eval/
+data/v2_scenarios/
+data/v2_*/
 
 # Large / binary artifacts
 *.wav
@@ -82,5 +91,4 @@ data/metadata/
 data/baseline/
 data/english_asv2019/
 data/sea30_en/
-
 data/mlaad_en/
