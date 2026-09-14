@@ -19,6 +19,7 @@ import torch
 import torchaudio
 
 from vaanirakshak.v2_audio import MODEL_SAMPLE_RATE
+from vaanirakshak.v2_calibration import calibration_metrics
 from vaanirakshak.v2_data_contract import (
     audit_cross_dataset,
     audit_manifest,
@@ -139,6 +140,7 @@ def evaluate(
                 "label": record.label,
                 "generator_id": record.generator_id,
                 "score": score,
+                "score_semantics": "calibrated_probability" if detector.calibrated_probability else "uncalibrated_detector_score",
                 "threshold": detector.threshold,
                 "predicted_spoof": score >= detector.threshold,
                 "window_scores": window_scores,
@@ -150,6 +152,13 @@ def evaluate(
             print(f"Evaluated {index:,}/{len(test_records):,}", flush=True)
 
     overall = metrics_at_threshold(labels, scores, detector.threshold)
+    probability_quality = calibration_metrics(labels, scores)
+    probability_quality["declared_calibrated_probability"] = bool(detector.calibrated_probability)
+    probability_quality["interpretation"] = (
+        "test-set calibration quality for a development-calibrated probability"
+        if detector.calibrated_probability
+        else "diagnostic calibration quality of an uncalibrated detector score; do not interpret as probability"
+    )
 
     by_dataset: dict[str, dict] = {}
     for dataset in sorted({row["dataset"] for row in rows}):
@@ -160,6 +169,10 @@ def evaluate(
                 subset_labels,
                 [float(row["score"]) for row in subset],
                 detector.threshold,
+            )
+            by_dataset[dataset]["probability_quality"] = calibration_metrics(
+                subset_labels,
+                [float(row["score"]) for row in subset],
             )
         else:
             by_dataset[dataset] = {
@@ -190,6 +203,7 @@ def evaluate(
         "test_records": len(test_records),
         "threshold_source": "frozen checkpoint; no test-set tuning",
         "overall": overall,
+        "probability_quality": probability_quality,
         "by_dataset": by_dataset,
         "by_generator": by_generator,
         "mean_recording_inference_ms": statistics.fmean(float(row["elapsed_ms"]) for row in rows),
