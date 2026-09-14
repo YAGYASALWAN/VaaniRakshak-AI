@@ -30,6 +30,7 @@ jobs:
           tests/test_v2_metrics.py
           tests/test_v2_ssl_model.py
           tests/test_v2_prepare_sea.py
+          tests/test_v2_prepare_benchmark.py
           tests/test_v2_manifest_tools.py
           -q
       - name: Compile V2 Python modules and CLIs
@@ -45,5 +46,6 @@ jobs:
           src/vaanirakshak/v2_train_ssl.py
           src/vaanirakshak/v2_evaluate.py
           src/vaanirakshak/v2_prepare_sea.py
+          src/vaanirakshak/v2_prepare_benchmark.py
           src/vaanirakshak/v2_server.py
           scripts/v2_manifest.py
