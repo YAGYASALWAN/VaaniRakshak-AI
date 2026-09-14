@@ -18,6 +18,23 @@ REPOSITORY = "Jack-ppkdczgx/SEA-Spoof"
 REVISION = "132f5dca9b6efe39cf1d3b54a858f167f5a421fc"
 
 
+def _load_ledger(path: Path) -> dict:
+    if not path.exists():
+        return {"reserved_bytes": 0}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("transfer.json is unreadable or invalid JSON; refusing network transfer") from exc
+    if not isinstance(value, dict):
+        raise ValueError("transfer.json must contain a JSON object")
+    reserved = value.get("reserved_bytes")
+    if isinstance(reserved, bool) or not isinstance(reserved, int):
+        raise ValueError("transfer.json reserved_bytes must be an integer")
+    if not 0 <= reserved <= MAX_BYTES:
+        raise ValueError("transfer.json reserved_bytes is outside the 0..30 GB hard ceiling")
+    return value
+
+
 class SafeRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         parsed = urlsplit(newurl)
@@ -35,7 +52,7 @@ class Transfer:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.ledger_path = self.root / "transfer.json"
-        self.ledger = json.loads(self.ledger_path.read_text()) if self.ledger_path.exists() else {"reserved_bytes": 0}
+        self.ledger = _load_ledger(self.ledger_path)
         if not token or not token.isascii() or any(c.isspace() for c in token):
             raise ValueError("Sign in to your approved Hugging Face account using hf auth login")
         self.token = token
@@ -85,9 +102,6 @@ class Transfer:
         else:
             save_json(identity_path, identity)
 
-        # A process may die after writing a temporary cache file but before its
-        # atomic rename. Those files are never valid cache entries and must not
-        # consume the row-group cache budget on the next run.
         for temporary in directory.glob("*.tmp"):
             try:
                 temporary.unlink()
@@ -165,9 +179,6 @@ class Transfer:
         if not data_path.is_file() and not meta_path.is_file():
             return None
         if not data_path.is_file() or not meta_path.is_file():
-            # An incomplete pair may be left if the process died between the two
-            # atomic file commits. It is not trusted and should not consume cache
-            # capacity on the next attempt.
             self._drop_range_pair(data_path, meta_path)
             return None
         try:
@@ -236,7 +247,6 @@ class Transfer:
 
         if self.used + size > MAX_BYTES:
             raise ValueError("30 GB transfer ceiling reached. Completed features are retained; no more data was requested.")
-        # Reserve before the request, including failed attempts, to avoid a crash bypassing the ceiling.
         self.ledger["reserved_bytes"] += size
         save_json(self.ledger_path, self.ledger)
         headers = {"Authorization": "Bearer " + self.token, "Accept-Encoding": "identity",
@@ -264,8 +274,6 @@ class Transfer:
             raise ValueError(f"Hugging Face returned HTTP {code}. Check access for the signed-in account; no token is printed.") from None
 
         self._save_persistent_range(item, offset, size, data)
-        # Only small metadata reads are also cached in memory. Large scoped reads are
-        # persisted on disk only until the caller commits that preparation scope.
         if size <= 1024**2:
             self.cache[key] = data
             while len(self.cache) > 16:
