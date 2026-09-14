@@ -1,4 +1,4 @@
-name: V2 Product Skeleton CI
+name: V2 Product CI
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  test-v2-engine:
+  test-v2:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +19,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
           python -m pip install -r requirements-v2.txt
-      - name: Run V2 engine tests
-        run: python -m pytest tests/test_v2_engine.py -q
+      - name: Run V2 engine and detector tests
+        run: python -m pytest tests/test_v2_engine.py tests/test_v2_detectors.py -q
       - name: Compile V2 Python modules
-        run: python -m py_compile src/vaanirakshak/v2_engine.py src/vaanirakshak/v2_server.py
+        run: >-
+          python -m py_compile
+          src/vaanirakshak/v2_audio.py
+          src/vaanirakshak/v2_engine.py
+          src/vaanirakshak/v2_detectors.py
+          src/vaanirakshak/v2_server.py
