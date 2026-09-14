@@ -30,9 +30,8 @@ from vaanirakshak.v2_data_contract import AudioRecord, audit_manifest, write_jso
 
 SCHEMA = "vaanirakshak-v2-sea-raw-v1"
 SOURCE_SPLITS = {"train": "train", "validation": "dev", "evaluation": "test"}
-# Duplicate conflicts are resolved in this order. Evaluation data is protected;
-# a duplicate must be removed from training rather than from a held-out test set.
 SOURCE_SPLIT_PRIORITY = {"evaluation": 0, "validation": 1, "train": 2}
+MIN_PREP_FREE_BYTES = 2_000_000_000
 
 
 def _hash_bytes(raw: bytes) -> str:
@@ -41,6 +40,15 @@ def _hash_bytes(raw: bytes) -> str:
 
 def _safe_id(value: str) -> str:
     return hashlib.blake2s(value.encode("utf-8"), digest_size=10).hexdigest()
+
+
+def _require_disk_headroom(root: Path) -> None:
+    free = int(shutil.disk_usage(root).free)
+    if free < MIN_PREP_FREE_BYTES:
+        raise ValueError(
+            f"Less than {MIN_PREP_FREE_BYTES / 1e9:.1f} GB free disk space remains; "
+            "SEA preparation stopped safely and may be resumed after freeing space"
+        )
 
 
 def _evaluation_first(groups: list[dict]) -> list[dict]:
@@ -117,12 +125,11 @@ def _scan_groups(root: Path, source: dict, client: Transfer, budget: int) -> dic
             saved = json.loads(cache.read_text(encoding="utf-8"))
             if saved.get("source") != item:
                 raise ValueError("Cached SEA metadata source differs from pinned source")
-            # A validated metadata receipt means any stale retry ranges from a crash
-            # after commit can be discarded without another network read.
             client.clear_scope(scope_id)
             candidates.extend(saved["groups"])
             continue
 
+        _require_disk_headroom(root)
         print(f"Scanning SEA metadata {ordinal}/{len(source['files'])}: {item['path']}", flush=True)
         groups = []
         client.begin_scope(scope_id)
@@ -133,10 +140,12 @@ def _scan_groups(root: Path, source: dict, client: Transfer, budget: int) -> dic
                 if not required.issubset(parquet.schema_arrow.names):
                     raise ValueError("SEA-Spoof schema differs from the verified release")
                 for row_group in range(parquet.num_row_groups):
+                    _require_disk_headroom(root)
                     labels = Counter()
                     for batch in parquet.iter_batches(
                         row_groups=[row_group], columns=["language", "label"], batch_size=1024, use_threads=False
                     ):
+                        _require_disk_headroom(root)
                         for row in batch.to_pylist():
                             if row["language"] == "en":
                                 if row["label"] not in {"bonafide", "spoof"}:
@@ -158,7 +167,6 @@ def _scan_groups(root: Path, source: dict, client: Transfer, budget: int) -> dic
                         }
                     )
                 parquet.close()
-            # The metadata sidecar is the durable commit point for this source file.
             save_json(cache, {"source": item, "groups": groups})
         except BaseException:
             client.end_scope(scope_id, clear=False)
@@ -223,6 +231,7 @@ def prepare(
     if not 1_000_000_000 <= budget <= MAX_BYTES:
         raise ValueError("budget must be between 1 GB and the 30 GB hard ceiling")
 
+    _require_disk_headroom(root)
     plan = _scan_groups(root, source, client, budget)
     sources = {item["path"]: item for item in source["files"]}
     receipts_root = root / "receipts"
@@ -233,8 +242,6 @@ def prepare(
     canonical_hash_owner: dict[str, str] = {}
     duplicate_counts = Counter()
 
-    # Process evaluation first so any exact/canonical duplicate later encountered
-    # in train/dev is discarded from the less-protected partition.
     groups = _evaluation_first(list(plan["groups"]))
     for ordinal, group in enumerate(groups, 1):
         scope_id = f"v2-sea-row-group:{group['unit']}"
@@ -242,12 +249,7 @@ def prepare(
         if receipt_path.exists():
             saved = json.loads(receipt_path.read_text(encoding="utf-8"))
             if saved.get("group") != group:
-                # A mismatched/corrupt receipt is not authoritative. Preserve any
-                # retry cache so the operator can investigate/recover safely.
                 raise ValueError("Completed V2 SEA group identity changed")
-            # If a previous process committed the receipt and died before clearing
-            # its retry cache, the validated receipt is authoritative and the stale
-            # remote ranges can now be removed without any network read.
             client.clear_scope(scope_id)
             for value in saved.get("records", []):
                 record = AudioRecord.from_dict(value["manifest"])
@@ -257,9 +259,7 @@ def prepare(
             print(f"Using completed V2 SEA group {ordinal}/{len(groups)}", flush=True)
             continue
 
-        if shutil.disk_usage(root).free < 2_000_000_000:
-            raise ValueError("Less than 2 GB free disk space remains; preparation stopped safely")
-
+        _require_disk_headroom(root)
         print(f"Materializing V2 SEA group {ordinal}/{len(groups)}", flush=True)
         completed = []
         client.begin_scope(scope_id)
@@ -267,6 +267,7 @@ def prepare(
             with RangeFile(client, sources[group["path"]]) as remote:
                 parquet = pq.ParquetFile(remote, pre_buffer=False)
                 for batch in parquet.iter_batches(row_groups=[group["row_group"]], batch_size=16, use_threads=False):
+                    _require_disk_headroom(root)
                     for row in batch.to_pylist():
                         if row.get("language") != "en":
                             continue
@@ -336,12 +337,8 @@ def prepare(
                         records.append(record)
                         completed.append({"manifest": record.as_dict(), "receipt": receipt})
                 parquet.close()
-            # Receipt commit is the durable boundary. Only after it succeeds is the
-            # retry cache disposable.
             save_json(receipt_path, {"group": group, "records": completed})
         except BaseException:
-            # Keep completed remote ranges for a future retry. The transfer ledger
-            # remains fail-closed, but reused cached ranges will not be charged twice.
             client.end_scope(scope_id, clear=False)
             raise
         else:
@@ -364,6 +361,7 @@ def prepare(
             "transfer_reserved_bytes": client.used,
             "duplicate_priority": ["test", "dev", "train"],
             "canonical_audio": "mono 16 kHz FLAC PCM_16",
+            "minimum_runtime_free_bytes": MIN_PREP_FREE_BYTES,
             "retry_cache": {
                 "enabled": True,
                 "scopes": ["SEA source metadata scan", "selected SEA row group"],
