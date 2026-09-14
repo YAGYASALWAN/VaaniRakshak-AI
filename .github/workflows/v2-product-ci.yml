@@ -33,6 +33,7 @@ jobs:
           tests/test_v2_metrics.py
           tests/test_v2_ssl_model.py
           tests/test_v2_training_state.py
+          tests/test_v2_preflight.py
           tests/test_v2_prepare_sea.py
           tests/test_v2_prepare_benchmark.py
           tests/test_v2_manifest_tools.py
