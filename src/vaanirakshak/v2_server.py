@@ -75,6 +75,13 @@ def _origin_allowed(websocket: WebSocket) -> bool:
     return origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:")
 
 
+def _detector_metadata() -> dict | None:
+    if DETECTOR is None:
+        return None
+    info = getattr(DETECTOR, "info", None)
+    return info.as_dict() if info is not None else None
+
+
 def _detector_status() -> dict:
     error = _configuration_error()
     if DETECTOR is None or SPEECH_GATE is None:
@@ -103,9 +110,9 @@ def _detector_status() -> dict:
         "quality_gate": SPEECH_GATE.name,
         "notice": DETECTOR.notice + f" Speech gate: {SPEECH_GATE.name}.",
     }
-    info = getattr(DETECTOR, "info", None)
-    if info is not None:
-        status["detector"] = info.as_dict()
+    detector_metadata = _detector_metadata()
+    if detector_metadata is not None:
+        status["detector"] = detector_metadata
     return status
 
 
@@ -135,17 +142,19 @@ async def analyze_stream(websocket: WebSocket) -> None:
     session_id = str(uuid.uuid4())
     session: StreamingSession | None = None
 
-    await websocket.send_json(
-        {
-            "type": "connected",
-            "session_id": session_id,
-            "analysis_mode": DETECTOR.mode,
-            "model": DETECTOR.name,
-            "threshold": DETECTOR.threshold,
-            "calibrated_probability": bool(DETECTOR.calibrated_probability),
-            "speech_gate": SPEECH_GATE.name,
-        }
-    )
+    connected = {
+        "type": "connected",
+        "session_id": session_id,
+        "analysis_mode": DETECTOR.mode,
+        "model": DETECTOR.name,
+        "threshold": DETECTOR.threshold,
+        "calibrated_probability": bool(DETECTOR.calibrated_probability),
+        "speech_gate": SPEECH_GATE.name,
+    }
+    detector_metadata = _detector_metadata()
+    if detector_metadata is not None:
+        connected["detector"] = detector_metadata
+    await websocket.send_json(connected)
 
     try:
         while True:
@@ -175,21 +184,22 @@ async def analyze_stream(websocket: WebSocket) -> None:
                     except (KeyError, TypeError, ValueError) as exc:
                         await websocket.send_json({"type": "error", "message": str(exc)})
                         continue
-                    await websocket.send_json(
-                        {
-                            "type": "started",
-                            "session_id": session_id,
-                            "sample_rate": sample_rate,
-                            "model_sample_rate": MODEL_SAMPLE_RATE,
-                            "window_seconds": WINDOW_SECONDS,
-                            "hop_seconds": HOP_SECONDS,
-                            "threshold": DETECTOR.threshold,
-                            "analysis_mode": DETECTOR.mode,
-                            "model": DETECTOR.name,
-                            "speech_gate": SPEECH_GATE.name,
-                            "notice": session.live_summary()["notice"],
-                        }
-                    )
+                    started = {
+                        "type": "started",
+                        "session_id": session_id,
+                        "sample_rate": sample_rate,
+                        "model_sample_rate": MODEL_SAMPLE_RATE,
+                        "window_seconds": WINDOW_SECONDS,
+                        "hop_seconds": HOP_SECONDS,
+                        "threshold": DETECTOR.threshold,
+                        "analysis_mode": DETECTOR.mode,
+                        "model": DETECTOR.name,
+                        "speech_gate": SPEECH_GATE.name,
+                        "notice": session.live_summary()["notice"],
+                    }
+                    if detector_metadata is not None:
+                        started["detector"] = detector_metadata
+                    await websocket.send_json(started)
                     continue
 
                 if kind == "stop":
@@ -197,6 +207,8 @@ async def analyze_stream(websocket: WebSocket) -> None:
                         await websocket.send_json({"type": "error", "message": "Session has not started"})
                         continue
                     final = session.finalize()
+                    if detector_metadata is not None:
+                        final["detector"] = detector_metadata
                     await websocket.send_json({"type": "final", "session_id": session_id, **final})
                     await websocket.close(code=1000)
                     return
