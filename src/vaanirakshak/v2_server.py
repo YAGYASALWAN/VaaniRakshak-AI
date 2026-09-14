@@ -29,6 +29,7 @@ from vaanirakshak.v2_engine import HOP_SECONDS, WINDOW_SECONDS, MockDetector, St
 
 ROOT = Path(__file__).resolve().parents[2]
 V2_FRONTEND = ROOT / "frontend" / "v2"
+REALTIME_BUDGET_MS = HOP_SECONDS * 1000.0
 
 app = FastAPI(title="VaaniRakshak V2", version="2.4.0-alpha")
 app.mount("/assets", StaticFiles(directory=V2_FRONTEND), name="assets")
@@ -83,6 +84,25 @@ def _detector_metadata() -> dict | None:
     return info.as_dict() if info is not None else None
 
 
+def _with_realtime_budget(summary: dict) -> dict:
+    """Annotate observed mean processing against the two-second sliding-window hop.
+
+    This is deliberately an observed scheduling signal, not a claim that the system
+    can sustain arbitrary concurrency or worst-case latency.
+    """
+    result = dict(summary)
+    result["realtime_budget_ms"] = REALTIME_BUDGET_MS
+    mean_total = result.get("mean_total_window_ms")
+    if isinstance(mean_total, (int, float)):
+        margin = REALTIME_BUDGET_MS - float(mean_total)
+        result["realtime_margin_ms"] = round(margin, 3)
+        result["observed_mean_within_hop_budget"] = margin >= 0.0
+    else:
+        result["realtime_margin_ms"] = None
+        result["observed_mean_within_hop_budget"] = None
+    return result
+
+
 def _detector_status() -> dict:
     error = _configuration_error()
     if DETECTOR is None or SPEECH_GATE is None:
@@ -97,6 +117,7 @@ def _detector_status() -> dict:
             "model_sample_rate": MODEL_SAMPLE_RATE,
             "quality_gate": getattr(SPEECH_GATE, "name", None),
             "window_execution": "worker-thread-when-analysis-ready",
+            "realtime_budget_ms": REALTIME_BUDGET_MS,
         }
 
     status = {
@@ -111,6 +132,7 @@ def _detector_status() -> dict:
         "model_sample_rate": MODEL_SAMPLE_RATE,
         "quality_gate": SPEECH_GATE.name,
         "window_execution": "worker-thread-when-analysis-ready",
+        "realtime_budget_ms": REALTIME_BUDGET_MS,
         "notice": DETECTOR.notice + f" Speech gate: {SPEECH_GATE.name}.",
     }
     detector_metadata = _detector_metadata()
@@ -163,6 +185,7 @@ async def analyze_stream(websocket: WebSocket) -> None:
         "calibrated_probability": bool(DETECTOR.calibrated_probability),
         "speech_gate": SPEECH_GATE.name,
         "window_execution": "worker-thread-when-analysis-ready",
+        "realtime_budget_ms": REALTIME_BUDGET_MS,
     }
     detector_metadata = _detector_metadata()
     if detector_metadata is not None:
@@ -209,6 +232,7 @@ async def analyze_stream(websocket: WebSocket) -> None:
                         "model": DETECTOR.name,
                         "speech_gate": SPEECH_GATE.name,
                         "window_execution": "worker-thread-when-analysis-ready",
+                        "realtime_budget_ms": REALTIME_BUDGET_MS,
                         "notice": session.live_summary()["notice"],
                     }
                     if detector_metadata is not None:
@@ -220,8 +244,7 @@ async def analyze_stream(websocket: WebSocket) -> None:
                     if session is None:
                         await websocket.send_json({"type": "error", "message": "Session has not started"})
                         continue
-                    # Finalization can run preprocessing/model inference on a partial tail.
-                    final = await asyncio.to_thread(session.finalize)
+                    final = _with_realtime_budget(await asyncio.to_thread(session.finalize))
                     if detector_metadata is not None:
                         final["detector"] = detector_metadata
                     await websocket.send_json({"type": "final", "session_id": session_id, **final})
@@ -247,7 +270,7 @@ async def analyze_stream(websocket: WebSocket) -> None:
                             {
                                 "type": "segment",
                                 "segment": window.as_dict(),
-                                "summary": session.live_summary(),
+                                "summary": _with_realtime_budget(session.live_summary()),
                             }
                         )
                 except (ValueError, RuntimeError) as exc:
