@@ -71,8 +71,9 @@ function addSegment(segment) {
     const reason = segment.quality?.reason || 'quality_gate';
     block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · skipped (${reason})`;
   } else {
-    block.className = segment.synthetic_score >= 0.65 ? 'segment high' : segment.synthetic_score >= 0.5 ? 'segment mid' : 'segment low';
-    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · score ${segment.synthetic_score.toFixed(3)} · speech ${(segment.quality.speech_ratio * 100).toFixed(0)}%`;
+    const evidence = Number.isFinite(segment.evidence_signal) ? segment.evidence_signal : (segment.suspicious ? 0.6 : 0.4);
+    block.className = evidence >= 0.75 ? 'segment high' : evidence >= 0.5 ? 'segment mid' : 'segment low';
+    block.title = `${segment.start_seconds.toFixed(1)}–${segment.end_seconds.toFixed(1)} s · score ${segment.synthetic_score.toFixed(3)} · threshold ${segment.threshold.toFixed(3)} · speech ${(segment.quality.speech_ratio * 100).toFixed(0)}%`;
   }
   block.setAttribute('aria-label', block.title);
   timeline.appendChild(block);
@@ -87,7 +88,7 @@ function renderFinal(result) {
   if (!result.enough_evidence) {
     el('final-copy').textContent = `Only ${result.usable_speech_seconds.toFixed(1)} seconds of usable speech across ${result.segments_analyzed} analyzed windows were available. VaaniRakshak refused to force a call-level verdict.`;
   } else {
-    el('final-copy').textContent = `${result.suspicious_segments} of ${result.segments_analyzed} analyzed windows crossed the current suspicious-score threshold; ${result.segments_skipped} windows were excluded by the quality gate.`;
+    el('final-copy').textContent = `${result.suspicious_segments} of ${result.segments_analyzed} analyzed windows crossed detector threshold ${result.threshold.toFixed(3)}; ${result.segments_skipped} windows were excluded by the quality gate.`;
   }
   el('final-notice').textContent = result.notice;
 
@@ -129,14 +130,14 @@ async function loadStatus() {
   try {
     const response = await fetch('/api/v2/status', { cache: 'no-store' });
     const status = await response.json();
-    if (!response.ok) throw new Error(status.detail || 'V2 backend unavailable.');
+    if (!response.ok) throw new Error(status.error || status.detail || 'V2 backend unavailable.');
     backendReady = status.ready;
     el('mode').textContent = status.analysis_mode.toUpperCase();
-    el('notice').textContent = status.notice;
+    el('notice').textContent = `${status.notice} Detector threshold: ${status.threshold.toFixed(3)}. Scores are${status.calibrated_probability ? '' : ' not'} calibrated probabilities.`;
     if (status.window_seconds && status.hop_seconds) el('windowing').textContent = `${status.window_seconds}s / ${status.hop_seconds}s`;
     el('start').disabled = !backendReady;
     setConnection('Backend ready', true);
-    setMessage('Ready. Start a microphone analysis session.');
+    setMessage(status.analysis_mode === 'mock' ? 'Ready in mock integration mode.' : `Ready with detector ${status.model}.`);
   } catch (error) {
     backendReady = false;
     el('start').disabled = true;
@@ -153,7 +154,7 @@ async function handleStreamMessage(event) {
     el('call-state').textContent = 'Call in progress';
     el('stop').disabled = false;
     setConnection('Streaming', true);
-    setMessage('Microphone audio is streaming to the local V2 backend.');
+    setMessage(`Microphone audio is streaming to ${data.model || 'the V2 detector'}.`);
     el('notice').textContent = data.notice;
     startedAt = performance.now();
     timerId = setInterval(() => {
