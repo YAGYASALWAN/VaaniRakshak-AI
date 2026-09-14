@@ -110,48 +110,61 @@ def _scan_groups(root: Path, source: dict, client: Transfer, budget: int) -> dic
     metadata_root = root / "metadata"
     metadata_root.mkdir(parents=True, exist_ok=True)
     for ordinal, item in enumerate(source["files"], 1):
-        cache = metadata_root / (_safe_id(item["path"]) + ".json")
+        item_key = _safe_id(item["path"])
+        cache = metadata_root / (item_key + ".json")
+        scope_id = f"v2-sea-metadata:{item_key}"
         if cache.exists():
             saved = json.loads(cache.read_text(encoding="utf-8"))
             if saved.get("source") != item:
                 raise ValueError("Cached SEA metadata source differs from pinned source")
+            # A validated metadata receipt means any stale retry ranges from a crash
+            # after commit can be discarded without another network read.
+            client.clear_scope(scope_id)
             candidates.extend(saved["groups"])
             continue
 
         print(f"Scanning SEA metadata {ordinal}/{len(source['files'])}: {item['path']}", flush=True)
         groups = []
-        with RangeFile(client, item) as remote:
-            parquet = pq.ParquetFile(remote, pre_buffer=False)
-            required = {"language", "label", "audio", "row_id", "split"}
-            if not required.issubset(parquet.schema_arrow.names):
-                raise ValueError("SEA-Spoof schema differs from the verified release")
-            for row_group in range(parquet.num_row_groups):
-                labels = Counter()
-                for batch in parquet.iter_batches(
-                    row_groups=[row_group], columns=["language", "label"], batch_size=1024, use_threads=False
-                ):
-                    for row in batch.to_pylist():
-                        if row["language"] == "en":
-                            if row["label"] not in {"bonafide", "spoof"}:
-                                raise ValueError("Unexpected English SEA label")
-                            labels[row["label"]] += 1
-                if not labels:
-                    continue
-                metadata = parquet.metadata.row_group(row_group)
-                estimated = sum(metadata.column(i).total_compressed_size for i in range(metadata.num_columns)) + 1024**2
-                groups.append(
-                    {
-                        "unit": _safe_id(f"{item['path']}:{row_group}"),
-                        "path": item["path"],
-                        "split": item["split"],
-                        "row_group": row_group,
-                        "english_rows": sum(labels.values()),
-                        "labels": dict(labels),
-                        "estimated_bytes": estimated,
-                    }
-                )
-            parquet.close()
-        save_json(cache, {"source": item, "groups": groups})
+        client.begin_scope(scope_id)
+        try:
+            with RangeFile(client, item) as remote:
+                parquet = pq.ParquetFile(remote, pre_buffer=False)
+                required = {"language", "label", "audio", "row_id", "split"}
+                if not required.issubset(parquet.schema_arrow.names):
+                    raise ValueError("SEA-Spoof schema differs from the verified release")
+                for row_group in range(parquet.num_row_groups):
+                    labels = Counter()
+                    for batch in parquet.iter_batches(
+                        row_groups=[row_group], columns=["language", "label"], batch_size=1024, use_threads=False
+                    ):
+                        for row in batch.to_pylist():
+                            if row["language"] == "en":
+                                if row["label"] not in {"bonafide", "spoof"}:
+                                    raise ValueError("Unexpected English SEA label")
+                                labels[row["label"]] += 1
+                    if not labels:
+                        continue
+                    metadata = parquet.metadata.row_group(row_group)
+                    estimated = sum(metadata.column(i).total_compressed_size for i in range(metadata.num_columns)) + 1024**2
+                    groups.append(
+                        {
+                            "unit": _safe_id(f"{item['path']}:{row_group}"),
+                            "path": item["path"],
+                            "split": item["split"],
+                            "row_group": row_group,
+                            "english_rows": sum(labels.values()),
+                            "labels": dict(labels),
+                            "estimated_bytes": estimated,
+                        }
+                    )
+                parquet.close()
+            # The metadata sidecar is the durable commit point for this source file.
+            save_json(cache, {"source": item, "groups": groups})
+        except BaseException:
+            client.end_scope(scope_id, clear=False)
+            raise
+        else:
+            client.end_scope(scope_id, clear=True)
         candidates.extend(groups)
 
     available = min(int(budget), MAX_BYTES - client.used - 1_000_000_000)
@@ -351,11 +364,11 @@ def prepare(
             "transfer_reserved_bytes": client.used,
             "duplicate_priority": ["test", "dev", "train"],
             "canonical_audio": "mono 16 kHz FLAC PCM_16",
-            "row_group_retry_cache": {
+            "retry_cache": {
                 "enabled": True,
-                "scope": "selected SEA row group",
-                "cleared_after_receipt_commit": True,
-                "purpose": "reuse completed pinned remote ranges after an interrupted row-group materialization",
+                "scopes": ["SEA source metadata scan", "selected SEA row group"],
+                "cleared_after_durable_commit": True,
+                "purpose": "reuse completed pinned remote ranges after interrupted preparation work",
             },
             "limitations": [
                 "Official SEA source split roles are retained as train/dev/test.",
