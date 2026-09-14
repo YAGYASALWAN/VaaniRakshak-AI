@@ -2,19 +2,20 @@
 
 This evaluator never retrains the detector and never changes the threshold saved in
 its checkpoint. It measures how a fixed detector degrades under controlled duration,
-telephone-channel and synthetic-noise stress conditions.
+telephone-channel and synthetic-noise stress conditions. When a checkpoint declares
+calibrated probabilities, the report also measures calibration drift under stress.
 """
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
-import statistics
 import time
 from typing import Callable
 
 import numpy as np
 
+from vaanirakshak.v2_calibration import calibration_metrics
 from vaanirakshak.v2_data_contract import (
     audit_cross_dataset,
     audit_manifest,
@@ -126,6 +127,8 @@ def evaluate_robustness(
         raise ValueError("Robustness suite is empty")
 
     detector = CheckpointDetector(checkpoint, device=device)
+    declared_calibrated = bool(getattr(detector, "calibrated_probability", False))
+    score_semantics = "calibrated_probability" if declared_calibrated else "uncalibrated_detector_score"
     labels = np.empty(len(test_records), dtype=np.int8)
     scores = {name: np.empty(len(test_records), dtype=np.float32) for name in suite}
     latency_sum_ms = {name: 0.0 for name in suite}
@@ -159,6 +162,8 @@ def evaluate_robustness(
                             "label": record.label,
                             "generator_id": record.generator_id,
                             "threshold": detector.threshold,
+                            "score_semantics": score_semantics,
+                            "recording_aggregation": "median_logit",
                             "scores": row_scores,
                         },
                         sort_keys=True,
@@ -173,20 +178,34 @@ def evaluate_robustness(
         if score_stream is not None:
             score_stream.close()
 
+    label_list = labels.tolist()
     reports: dict[str, dict] = {}
     for name in suite:
-        metrics = metrics_at_threshold(labels.tolist(), scores[name].tolist(), detector.threshold)
+        condition_scores = scores[name].tolist()
+        metrics = metrics_at_threshold(label_list, condition_scores, detector.threshold)
+        probability_quality = calibration_metrics(label_list, condition_scores)
+        probability_quality["declared_calibrated_probability"] = declared_calibrated
+        probability_quality["interpretation"] = (
+            "calibration quality under this stress condition"
+            if declared_calibrated
+            else "diagnostic score calibration only; detector is not declared probabilistic"
+        )
         reports[name] = {
             **metrics,
+            "score_semantics": score_semantics,
+            "recording_aggregation": "median_logit",
+            "probability_quality": probability_quality,
             "mean_score": float(np.mean(scores[name], dtype=np.float64)),
             "mean_recording_inference_ms": latency_sum_ms[name] / len(test_records),
         }
 
     clean = reports["clean"]
+    clean_probability = clean["probability_quality"]
     degradation: dict[str, dict] = {}
     for name, metrics in reports.items():
         if name == "clean":
             continue
+        probability = metrics["probability_quality"]
         degradation[name] = {
             "delta_accuracy": _delta(metrics["accuracy"], clean["accuracy"]),
             "delta_f1": _delta(metrics["f1"], clean["f1"]),
@@ -196,6 +215,9 @@ def evaluate_robustness(
             "delta_false_positive_rate": _delta(metrics["false_positive_rate"], clean["false_positive_rate"]),
             "delta_false_negative_rate": _delta(metrics["false_negative_rate"], clean["false_negative_rate"]),
             "delta_mean_score": _delta(metrics["mean_score"], clean["mean_score"]),
+            "delta_nll": _delta(probability["nll"], clean_probability["nll"]),
+            "delta_brier": _delta(probability["brier"], clean_probability["brier"]),
+            "delta_ece": _delta(probability["ece"], clean_probability["ece"]),
         }
 
     report = {
@@ -206,6 +228,8 @@ def evaluate_robustness(
         "manifest_fingerprint": manifest_fingerprint(records),
         "test_records": len(test_records),
         "threshold_source": "frozen checkpoint; unchanged for every robustness condition",
+        "score_semantics": score_semantics,
+        "recording_aggregation": "median_logit",
         "conditions": reports,
         "degradation_vs_clean": degradation,
         "audit_counts": audit.counts,
@@ -213,6 +237,7 @@ def evaluate_robustness(
         "score_file_written": bool(save_scores),
         "notice": (
             "Controlled stress transforms measure robustness of a frozen detector. "
+            "For calibrated checkpoints, NLL/Brier/ECE quantify calibration drift without refitting. "
             "White noise is synthetic and does not replace later real-noise evaluation."
         ),
     }
