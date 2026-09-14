@@ -2,6 +2,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -9,9 +10,11 @@ import soundfile as sf
 
 from vaanirakshak.sea_transfer import REPOSITORY, REVISION
 from vaanirakshak.v2_prepare_sea import (
+    MIN_PREP_FREE_BYTES,
     _canonical_flac,
     _evaluation_first,
     _generator,
+    _require_disk_headroom,
     _scan_groups,
     _source_utterance,
     _speaker,
@@ -84,6 +87,14 @@ class V2SEAPreparationTests(unittest.TestCase):
         ordered = _evaluation_first(groups)
         self.assertEqual([group["split"] for group in ordered], ["evaluation", "evaluation", "validation", "train"])
         self.assertEqual([group["path"] for group in ordered[:2]], ["a", "c"])
+
+    def test_disk_floor_fails_before_exhaustion(self):
+        with tempfile.TemporaryDirectory() as folder, patch(
+            "vaanirakshak.v2_prepare_sea.shutil.disk_usage",
+            return_value=SimpleNamespace(free=MIN_PREP_FREE_BYTES - 1),
+        ):
+            with self.assertRaisesRegex(ValueError, "free disk space"):
+                _require_disk_headroom(Path(folder))
 
     def test_failed_metadata_scan_keeps_retry_scope_for_next_run(self):
         item = {"path": "data/train/fake.parquet", "size": 4096, "split": "train"}
