@@ -26,6 +26,7 @@ jobs:
           python -m pytest
           tests/test_v2_audio.py
           tests/test_v2_engine.py
+          tests/test_v2_server.py
           tests/test_v2_detectors.py
           tests/test_v2_data_contract.py
           tests/test_v2_data_contract_speakers.py
