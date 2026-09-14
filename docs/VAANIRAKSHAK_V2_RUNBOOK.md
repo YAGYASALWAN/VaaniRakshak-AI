@@ -269,7 +269,70 @@ Full benchmark: omit `--max-per-label`.
 
 ASVspoof 5 is large. Plan storage and evaluation compute before materializing the full test package.
 
-## 10. Plug the trained V2 checkpoint into the live product
+## 10. Frozen duration / telephony / noise robustness suite
+
+Run the robustness suite against a **frozen checkpoint**. The threshold saved in the checkpoint is reused unchanged for every condition.
+
+Example on the ordinary SEA test split:
+
+```powershell
+python -m vaanirakshak.v2_robustness_eval `
+  --manifest data/v2_sea_en/manifest.jsonl `
+  --checkpoint models/v2_wavlm_sea/best.pt `
+  --output reports/v2_sea_robustness `
+  --scenario standard `
+  --device cuda
+```
+
+The default suite evaluates:
+
+```text
+clean
+duration_2s
+duration_4s
+duration_8s
+narrowband_8khz
+g711_mulaw
+g711_alaw
+noise_20db
+noise_10db
+noise_5db
+```
+
+Output:
+
+```text
+reports/v2_sea_robustness/
+  robustness.json
+```
+
+Add `--save-scores` only when per-record stress scores are useful for error analysis. On a very large benchmark this can create a substantial file.
+
+The report contains absolute metrics for each condition plus degradation relative to clean audio. In particular, inspect changes in:
+
+- EER;
+- F1;
+- ROC-AUC / PR-AUC;
+- false-positive rate;
+- false-negative rate.
+
+The noise tests use deterministic synthetic white noise. They are a controlled engineering stress test, not a substitute for a later real-background-noise corpus.
+
+The same evaluator can be run on an external benchmark. Example:
+
+```powershell
+python -m vaanirakshak.v2_robustness_eval `
+  --manifest data/v2_eval/asv2021_la_smoke/manifest.jsonl `
+  --checkpoint models/v2_wavlm_sea/best.pt `
+  --output reports/asv2021_la_robustness_smoke `
+  --scenario cross-dataset `
+  --evaluation-dataset ASVspoof2021_LA `
+  --device cuda
+```
+
+Smoke results remain non-reportable as full-benchmark performance.
+
+## 11. Plug the trained V2 checkpoint into the live product
 
 PowerShell:
 
@@ -287,7 +350,7 @@ The status panel should now report a trained detector rather than MOCK mode.
 
 If checkpoint loading fails, the V2 server deliberately enters a configuration-error state. It does **not** silently substitute the mock detector.
 
-## 11. Legacy V1 checkpoint integration (debug only)
+## 12. Legacy V1 checkpoint integration (debug only)
 
 V1 checkpoints are refused by default.
 
@@ -301,7 +364,7 @@ python -m vaanirakshak.v2_server
 
 The UI/server labels this mode `legacy-experimental`. This is not a V2 model-quality claim.
 
-## 12. Release gate before calling the detector V2-ready
+## 13. Release gate before calling the detector V2-ready
 
 A checkpoint should not be promoted to the SIH-facing detector until we have, at minimum:
 
@@ -322,5 +385,6 @@ A checkpoint should not be promoted to the SIH-facing detector until we have, at
 - The call-level risk formula is a transparent product heuristic, not a calibrated probability model.
 - WavLM V2 code and checkpoint plumbing exist, but model quality is unknown until real training/evaluation runs are completed.
 - Detector scores are explicitly marked uncalibrated unless a future checkpoint provides validated calibration.
+- Controlled white-noise robustness is not equivalent to real environmental-noise validation.
 - SEA-Spoof use is subject to its approved non-commercial academic research terms.
 - GitHub Actions status should be checked separately; the existence of CI configuration is not itself evidence that a remote run passed.
