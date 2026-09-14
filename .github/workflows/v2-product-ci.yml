@@ -55,6 +55,7 @@ jobs:
           tests/test_v2_prepare_benchmark.py
           tests/test_v2_manifest_tools.py
           tests/test_v2_robustness.py
+          tests/test_v2_frontend_contract.py
           -q
       - name: Compile V2 Python modules and CLIs
         run: >-
