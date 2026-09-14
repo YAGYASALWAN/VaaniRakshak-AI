@@ -1,9 +1,9 @@
 """VaaniRakshak V2 streaming analysis primitives.
 
-This module deliberately keeps the product/session logic separate from the ML model.
-The initial detector is a deterministic mock so the complete product can be tested
-before a V2 anti-spoofing checkpoint exists. Mock scores MUST NOT be presented as
-real authenticity evidence.
+The product/session logic remains independent of the anti-spoofing model. Incoming
+browser PCM is framed with overlap, quality-gated, normalized to 16 kHz and only
+then passed to a detector. The current detector is still a deterministic mock;
+its outputs MUST NOT be presented as authenticity findings.
 """
 from __future__ import annotations
 
@@ -15,11 +15,17 @@ import statistics
 import time
 from typing import Iterable, Protocol
 
+import numpy as np
+
+from vaanirakshak.v2_audio import AudioQuality, MODEL_SAMPLE_RATE, prepare_model_window
+
 
 WINDOW_SECONDS = 4.0
+HOP_SECONDS = 2.0
 MIN_FINAL_WINDOW_SECONDS = 2.0
 SUSPICIOUS_THRESHOLD = 0.65
-HIGH_RISK_THRESHOLD = 0.80
+MIN_ANALYZED_WINDOWS = 2
+MIN_USABLE_SPEECH_SECONDS = 4.0
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -27,41 +33,40 @@ def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
 
 
 class Detector(Protocol):
-    """Interface a future trained detector must implement."""
+    """Interface a future trained V2 detector must implement."""
 
     name: str
     mode: str
 
-    def score(self, samples: list[int], sample_rate: int) -> float:
-        """Return a finite synthetic-speech score in [0, 1]."""
+    def score(self, samples: np.ndarray, sample_rate: int) -> float:
+        """Return a finite synthetic-speech score in [0, 1].
+
+        `samples` are mono float32 samples normalized to [-1, 1] at 16 kHz.
+        """
 
 
 class MockDetector:
-    """Deterministic placeholder used only to exercise the V2 product pipeline.
-
-    The score is intentionally NOT an anti-spoofing prediction. It combines basic
-    signal statistics with a small deterministic hash jitter so different windows
-    produce different UI states without introducing non-reproducible randomness.
-    """
+    """Deterministic placeholder used only to exercise the V2 product pipeline."""
 
     name = "v2-product-mock"
     mode = "mock"
 
-    def score(self, samples: list[int], sample_rate: int) -> float:
-        if not samples:
+    def score(self, samples: np.ndarray, sample_rate: int) -> float:
+        if sample_rate != MODEL_SAMPLE_RATE:
+            raise ValueError("Detector expected 16 kHz model input")
+        wave = np.asarray(samples, dtype=np.float32)
+        if wave.size == 0:
             return 0.5
-        normalized = [s / 32768.0 for s in samples]
-        rms = math.sqrt(sum(x * x for x in normalized) / len(normalized))
-        peak = max(abs(x) for x in normalized)
-        crossings = sum(
-            1 for left, right in zip(normalized, normalized[1:])
-            if (left < 0 <= right) or (left >= 0 > right)
-        )
-        zcr = crossings / max(1, len(normalized) - 1)
+
+        rms = float(np.sqrt(np.mean(np.square(wave), dtype=np.float64)))
+        peak = float(np.max(np.abs(wave)))
+        crossings = int(np.count_nonzero(np.diff(np.signbit(wave))))
+        zcr = crossings / max(1, len(wave) - 1)
         crest = peak / max(rms, 1e-6)
 
-        # Stable per-window jitter: useful for exercising aggregation and UI only.
-        digest = hashlib.blake2s(array("h", samples[:4096]).tobytes(), digest_size=2).digest()
+        # Stable per-window jitter: UI/integration exercise only, never an ML claim.
+        quantized = np.clip(np.rint(wave[:4096] * 32767.0), -32768, 32767).astype("<i2")
+        digest = hashlib.blake2s(quantized.tobytes(), digest_size=2).digest()
         jitter = (int.from_bytes(digest, "little") / 65535.0 - 0.5) * 0.18
 
         score = 0.48
@@ -77,15 +82,24 @@ class WindowResult:
     index: int
     start_seconds: float
     end_seconds: float
-    synthetic_score: float
+    synthetic_score: float | None
+    quality: AudioQuality
+    inference_ms: float | None = None
+
+    @property
+    def analyzed(self) -> bool:
+        return self.synthetic_score is not None
 
     def as_dict(self) -> dict:
         return {
             "index": self.index,
             "start_seconds": round(self.start_seconds, 3),
             "end_seconds": round(self.end_seconds, 3),
-            "synthetic_score": round(self.synthetic_score, 6),
-            "suspicious": self.synthetic_score >= SUSPICIOUS_THRESHOLD,
+            "synthetic_score": None if self.synthetic_score is None else round(self.synthetic_score, 6),
+            "analyzed": self.analyzed,
+            "suspicious": bool(self.analyzed and self.synthetic_score >= SUSPICIOUS_THRESHOLD),
+            "quality": self.quality.as_dict(),
+            "inference_ms": None if self.inference_ms is None else round(self.inference_ms, 3),
         }
 
 
@@ -95,9 +109,10 @@ class StreamingSession:
     sample_rate: int
     created_at: float = field(default_factory=time.monotonic)
     total_samples: int = 0
-    processed_samples: int = 0
+    buffer_start_sample: int = 0
     buffer: array = field(default_factory=lambda: array("h"))
     windows: list[WindowResult] = field(default_factory=list)
+    finalized: bool = False
 
     def __post_init__(self) -> None:
         if not 8_000 <= self.sample_rate <= 96_000:
@@ -107,8 +122,14 @@ class StreamingSession:
     def window_samples(self) -> int:
         return int(self.sample_rate * WINDOW_SECONDS)
 
+    @property
+    def hop_samples(self) -> int:
+        return int(self.sample_rate * HOP_SECONDS)
+
     def ingest_pcm16le(self, payload: bytes) -> list[WindowResult]:
-        """Ingest signed little-endian 16-bit mono PCM and return new windows."""
+        """Ingest signed little-endian mono PCM and return newly framed windows."""
+        if self.finalized:
+            raise RuntimeError("Session is already finalized")
         if not payload:
             return []
         if len(payload) % 2:
@@ -118,8 +139,6 @@ class StreamingSession:
         chunk.frombytes(payload)
         if chunk.itemsize != 2:
             raise RuntimeError("Unsupported Python short size")
-        # GitHub/Windows/Linux targets are little-endian in practice; preserve the
-        # explicit wire format for correctness on an unusual big-endian host.
         import sys
         if sys.byteorder != "little":
             chunk.byteswap()
@@ -127,44 +146,77 @@ class StreamingSession:
         self.buffer.extend(chunk)
         self.total_samples += len(chunk)
         emitted: list[WindowResult] = []
+
+        # Sliding window: after a 4 s inference window, retain 2 s so the next
+        # inference overlaps the previous one by 50%.
         while len(self.buffer) >= self.window_samples:
-            window = self.buffer[: self.window_samples]
-            del self.buffer[: self.window_samples]
-            emitted.append(self._analyze_window(list(window)))
+            window = list(self.buffer[: self.window_samples])
+            emitted.append(self._analyze_window(window, self.buffer_start_sample))
+            del self.buffer[: self.hop_samples]
+            self.buffer_start_sample += self.hop_samples
         return emitted
 
-    def _analyze_window(self, samples: list[int]) -> WindowResult:
-        score = float(self.detector.score(samples, self.sample_rate))
-        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
-            raise ValueError("Detector returned an invalid score")
-        start = self.processed_samples / self.sample_rate
-        self.processed_samples += len(samples)
+    def _analyze_window(self, samples: list[int], start_sample: int) -> WindowResult:
+        model_wave, quality = prepare_model_window(samples, self.sample_rate)
+        score: float | None = None
+        inference_ms: float | None = None
+
+        if quality.usable:
+            started = time.perf_counter()
+            score = float(self.detector.score(model_wave, MODEL_SAMPLE_RATE))
+            inference_ms = (time.perf_counter() - started) * 1000.0
+            if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+                raise ValueError("Detector returned an invalid score")
+
         result = WindowResult(
             index=len(self.windows),
-            start_seconds=start,
-            end_seconds=self.processed_samples / self.sample_rate,
+            start_seconds=start_sample / self.sample_rate,
+            end_seconds=(start_sample + len(samples)) / self.sample_rate,
             synthetic_score=score,
+            quality=quality,
+            inference_ms=inference_ms,
         )
         self.windows.append(result)
         return result
 
     def finalize(self) -> dict:
-        """Analyze a useful partial tail and return a call-level product summary."""
+        """Analyze one useful partial tail and return a call-level product summary."""
+        if self.finalized:
+            return aggregate_call(self.windows, self.total_samples / self.sample_rate, self.detector)
+        self.finalized = True
+
         min_tail = int(self.sample_rate * MIN_FINAL_WINDOW_SECONDS)
         if len(self.buffer) >= min_tail:
-            tail = list(self.buffer)
-            self.buffer = array("h")
-            self._analyze_window(tail)
+            self._analyze_window(list(self.buffer), self.buffer_start_sample)
+        self.buffer = array("h")
         return aggregate_call(self.windows, self.total_samples / self.sample_rate, self.detector)
 
     def live_summary(self) -> dict:
         return aggregate_call(self.windows, self.total_samples / self.sample_rate, self.detector)
 
 
+def _estimate_unique_speech_seconds(items: list[WindowResult]) -> float:
+    """Estimate usable speech without double-counting overlapping window coverage."""
+    if not items:
+        return 0.0
+    ordered = sorted(items, key=lambda item: item.start_seconds)
+    covered_until = 0.0
+    speech = 0.0
+    for item in ordered:
+        unique_start = max(item.start_seconds, covered_until)
+        unique_duration = max(0.0, item.end_seconds - unique_start)
+        speech += unique_duration * item.quality.speech_ratio
+        covered_until = max(covered_until, item.end_seconds)
+    return speech
+
+
 def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, detector: Detector) -> dict:
     items = list(windows)
-    scores = [item.synthetic_score for item in items]
-    suspicious = [item for item in items if item.synthetic_score >= SUSPICIOUS_THRESHOLD]
+    analyzed = [item for item in items if item.synthetic_score is not None]
+    skipped = [item for item in items if item.synthetic_score is None]
+    scores = [float(item.synthetic_score) for item in analyzed]
+    suspicious = [item for item in analyzed if float(item.synthetic_score) >= SUSPICIOUS_THRESHOLD]
+    usable_speech_seconds = _estimate_unique_speech_seconds(items)
 
     if scores:
         median_score = statistics.median(scores)
@@ -172,8 +224,8 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
         suspicious_ratio = len(suspicious) / len(scores)
         dispersion = statistics.pstdev(scores) if len(scores) > 1 else 0.0
         consistency = _clamp(1.0 - dispersion / 0.30)
-        # Keep risk distinct from a model probability. Multiple-window consistency
-        # and suspicious-window prevalence influence the product-level signal.
+        # Temporary product heuristic, not a calibrated probability. V2 experiments
+        # must later determine appropriate call-level aggregation and thresholds.
         risk_fraction = _clamp(
             0.50 * median_score
             + 0.25 * mean_score
@@ -186,9 +238,10 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
         consistency = 0.0
         risk_score = 0
 
-    if not items:
-        risk_label = "Collecting evidence"
-        verdict = "Insufficient audio"
+    enough_evidence = len(analyzed) >= MIN_ANALYZED_WINDOWS and usable_speech_seconds >= MIN_USABLE_SPEECH_SECONDS
+    if not enough_evidence:
+        risk_label = "Collecting evidence" if duration_seconds < MIN_USABLE_SPEECH_SECONDS else "Insufficient evidence"
+        verdict = "Insufficient evidence"
     elif risk_score >= 81:
         risk_label = "High risk"
         verdict = "Likely synthetic"
@@ -202,14 +255,18 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
         risk_label = "Low risk"
         verdict = "Likely genuine"
 
-    top_regions = sorted(items, key=lambda item: item.synthetic_score, reverse=True)[:5]
+    top_regions = sorted(analyzed, key=lambda item: float(item.synthetic_score), reverse=True)[:5]
     top_regions.sort(key=lambda item: item.start_seconds)
+    inference_values = [item.inference_ms for item in analyzed if item.inference_ms is not None]
 
     return {
         "analysis_mode": detector.mode,
         "model": detector.name,
         "duration_seconds": round(duration_seconds, 3),
-        "segments_analyzed": len(items),
+        "usable_speech_seconds": round(usable_speech_seconds, 3),
+        "windows_seen": len(items),
+        "segments_analyzed": len(analyzed),
+        "segments_skipped": len(skipped),
         "suspicious_segments": len(suspicious),
         "suspicious_ratio": round(suspicious_ratio, 6),
         "median_synthetic_score": round(median_score, 6),
@@ -218,11 +275,17 @@ def aggregate_call(windows: Iterable[WindowResult], duration_seconds: float, det
         "risk_score": risk_score,
         "risk_label": risk_label,
         "verdict": verdict,
+        "enough_evidence": enough_evidence,
         "threshold": SUSPICIOUS_THRESHOLD,
+        "window_seconds": WINDOW_SECONDS,
+        "hop_seconds": HOP_SECONDS,
+        "model_sample_rate": MODEL_SAMPLE_RATE,
+        "mean_inference_ms": round(statistics.fmean(inference_values), 3) if inference_values else None,
         "regions": [region.as_dict() for region in top_regions],
         "notice": (
-            "V2 product-skeleton mode uses a deterministic mock detector. "
-            "Risk and verdict values are UI/integration test data, not voice-authenticity findings."
+            "V2 product-skeleton mode uses a deterministic mock detector. Risk and verdict values are "
+            "UI/integration test data, not voice-authenticity findings. Audio quality gating and 16 kHz "
+            "normalization are active."
             if detector.mode == "mock"
             else "Risk is an aggregated security signal and is not proof of authenticity."
         ),
