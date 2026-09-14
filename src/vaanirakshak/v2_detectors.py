@@ -6,6 +6,7 @@ whether the active checkpoint is a legacy log-mel CNN or a V2 SSL model.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,14 @@ RAW_FRONTEND = "raw-16khz-v1"
 MODEL_SAMPLES = 4 * MODEL_SAMPLE_RATE
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class DetectorInfo:
     name: str
@@ -33,6 +42,7 @@ class DetectorInfo:
     device: str
     notice: str
     checkpoint: str | None = None
+    checkpoint_sha256: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +55,7 @@ class DetectorInfo:
             "device": self.device,
             "notice": self.notice,
             "checkpoint": self.checkpoint,
+            "checkpoint_sha256": self.checkpoint_sha256,
         }
 
 
@@ -73,6 +84,7 @@ class CheckpointDetector:
         if device == "cuda" and not torch.cuda.is_available():
             raise ValueError("CUDA was requested for the detector but is unavailable")
 
+        checkpoint_sha256 = _file_sha256(path)
         state = torch.load(path, map_location="cpu", weights_only=True)
         if not isinstance(state, dict):
             raise ValueError("Detector checkpoint must contain a state dictionary")
@@ -111,6 +123,7 @@ class CheckpointDetector:
         self.device = device
         self.notice = notice
         self.checkpoint_path = path
+        self.checkpoint_sha256 = checkpoint_sha256
         self._torch = torch
         self._frontend = None
 
@@ -156,6 +169,7 @@ class CheckpointDetector:
             device=self.device,
             notice=self.notice,
             checkpoint=str(self.checkpoint_path),
+            checkpoint_sha256=self.checkpoint_sha256,
         )
 
     def score(self, samples: np.ndarray, sample_rate: int) -> float:
