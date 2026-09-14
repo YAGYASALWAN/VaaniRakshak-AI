@@ -1,7 +1,9 @@
 """Authenticated, byte-budgeted range reads of pinned SEA-Spoof Parquet files."""
 from collections import OrderedDict
+import hashlib
 import io
 import json
+import shutil
 import time
 from pathlib import Path
 from urllib.error import HTTPError
@@ -11,6 +13,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from vaanirakshak.baseline_download import save_json
 
 MAX_BYTES = 30_000_000_000
+MAX_SCOPE_CACHE_BYTES = 4_000_000_000
 REPOSITORY = "Jack-ppkdczgx/SEA-Spoof"
 REVISION = "132f5dca9b6efe39cf1d3b54a858f167f5a421fc"
 
@@ -38,10 +41,161 @@ class Transfer:
         self.token = token
         self.opener = build_opener(SafeRedirect())
         self.cache = OrderedDict()
+        self.range_cache_root = self.root / "range_cache"
+        self._scope_id: str | None = None
+        self._scope_dir: Path | None = None
+        self._scope_cached_bytes = 0
 
     @property
     def used(self):
         return self.ledger["reserved_bytes"]
+
+    @staticmethod
+    def _scope_key(scope_id: str) -> str:
+        return hashlib.blake2s(scope_id.encode("utf-8"), digest_size=12).hexdigest()
+
+    def _scope_directory(self, scope_id: str) -> Path:
+        return self.range_cache_root / self._scope_key(scope_id)
+
+    def begin_scope(self, scope_id: str) -> None:
+        """Enable persistent retry caching for one logical preparation unit.
+
+        A scope is intended to wrap one SEA row group. Successfully fetched remote
+        ranges are cached atomically on disk. If the process crashes, the next run
+        can reopen the same scope and reuse those ranges without reserving/downloading
+        them again. A successful caller should end the scope with ``clear=True``.
+        """
+        value = str(scope_id).strip()
+        if not value:
+            raise ValueError("scope_id must be nonempty")
+        if self._scope_id is not None:
+            raise RuntimeError("A transfer retry-cache scope is already active")
+        directory = self._scope_directory(value)
+        directory.mkdir(parents=True, exist_ok=True)
+        identity_path = directory / "scope.json"
+        identity = {
+            "scope_id": value,
+            "repository": REPOSITORY,
+            "revision": REVISION,
+        }
+        if identity_path.exists():
+            saved = json.loads(identity_path.read_text(encoding="utf-8"))
+            if saved != identity:
+                raise ValueError("Persistent range-cache scope identity changed")
+        else:
+            save_json(identity_path, identity)
+        self._scope_id = value
+        self._scope_dir = directory
+        self._scope_cached_bytes = sum(
+            path.stat().st_size for path in directory.glob("*.bin") if path.is_file()
+        )
+
+    def end_scope(self, scope_id: str, *, clear: bool) -> None:
+        value = str(scope_id).strip()
+        if self._scope_id != value or self._scope_dir is None:
+            raise RuntimeError("Attempted to end a transfer scope that is not active")
+        directory = self._scope_dir
+        self._scope_id = None
+        self._scope_dir = None
+        self._scope_cached_bytes = 0
+        if clear and directory.exists():
+            shutil.rmtree(directory)
+            try:
+                self.range_cache_root.rmdir()
+            except OSError:
+                pass
+
+    def clear_scope(self, scope_id: str) -> None:
+        value = str(scope_id).strip()
+        if not value:
+            raise ValueError("scope_id must be nonempty")
+        if self._scope_id == value:
+            raise RuntimeError("Cannot clear the active transfer scope")
+        directory = self._scope_directory(value)
+        if directory.exists():
+            shutil.rmtree(directory)
+        try:
+            self.range_cache_root.rmdir()
+        except OSError:
+            pass
+
+    def _range_cache_paths(self, item, offset: int, size: int) -> tuple[Path, Path] | None:
+        if self._scope_dir is None:
+            return None
+        material = json.dumps(
+            {
+                "repository": REPOSITORY,
+                "revision": REVISION,
+                "path": item["path"],
+                "file_size": item["size"],
+                "offset": offset,
+                "size": size,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        key = hashlib.blake2s(material, digest_size=16).hexdigest()
+        return self._scope_dir / f"{key}.bin", self._scope_dir / f"{key}.json"
+
+    def _load_persistent_range(self, item, offset: int, size: int) -> bytes | None:
+        paths = self._range_cache_paths(item, offset, size)
+        if paths is None:
+            return None
+        data_path, meta_path = paths
+        if not data_path.is_file() or not meta_path.is_file():
+            return None
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            expected = {
+                "repository": REPOSITORY,
+                "revision": REVISION,
+                "path": item["path"],
+                "file_size": item["size"],
+                "offset": offset,
+                "size": size,
+            }
+            for key, value in expected.items():
+                if metadata.get(key) != value:
+                    raise ValueError("range cache identity mismatch")
+            if data_path.stat().st_size != size:
+                raise ValueError("range cache length mismatch")
+            data = data_path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            if metadata.get("sha256") != digest:
+                raise ValueError("range cache digest mismatch")
+            return data
+        except (OSError, ValueError, json.JSONDecodeError):
+            for path in (data_path, meta_path):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            self._scope_cached_bytes = sum(
+                path.stat().st_size for path in self._scope_dir.glob("*.bin") if path.is_file()
+            ) if self._scope_dir is not None else 0
+            return None
+
+    def _save_persistent_range(self, item, offset: int, size: int, data: bytes) -> None:
+        paths = self._range_cache_paths(item, offset, size)
+        if paths is None or size <= 0:
+            return
+        if size > MAX_SCOPE_CACHE_BYTES or self._scope_cached_bytes + size > MAX_SCOPE_CACHE_BYTES:
+            return
+        data_path, meta_path = paths
+        temporary = data_path.with_suffix(".bin.tmp")
+        temporary.write_bytes(data)
+        temporary.replace(data_path)
+        metadata = {
+            "repository": REPOSITORY,
+            "revision": REVISION,
+            "path": item["path"],
+            "file_size": item["size"],
+            "offset": offset,
+            "size": size,
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        save_json(meta_path, metadata)
+        self._scope_cached_bytes += size
 
     def fetch(self, item, offset, size):
         if size == 0:
@@ -52,6 +206,15 @@ class Transfer:
         if key in self.cache:
             self.cache.move_to_end(key)
             return self.cache[key]
+
+        persistent = self._load_persistent_range(item, offset, size)
+        if persistent is not None:
+            if size <= 1024**2:
+                self.cache[key] = persistent
+                while len(self.cache) > 16:
+                    self.cache.popitem(last=False)
+            return persistent
+
         if self.used + size > MAX_BYTES:
             raise ValueError("30 GB transfer ceiling reached. Completed features are retained; no more data was requested.")
         # Reserve before the request, including failed attempts, to avoid a crash bypassing the ceiling.
@@ -69,7 +232,7 @@ class Transfer:
                 while received < size:
                     block = response.read(min(8 * 1024**2, size - received))
                     if not block:
-                        raise ConnectionError("Interrupted range read; rerun to reuse completed feature groups")
+                        raise ConnectionError("Interrupted range read; rerun to reuse completed cached ranges")
                     pieces.append(block)
                     received += len(block)
                     if time.monotonic() - last >= 5:
@@ -80,7 +243,10 @@ class Transfer:
             code = error.code
             error.close()
             raise ValueError(f"Hugging Face returned HTTP {code}. Check access for the signed-in account; no token is printed.") from None
-        # Only small metadata reads are cached; audio is converted to features instead.
+
+        self._save_persistent_range(item, offset, size, data)
+        # Only small metadata reads are also cached in memory. Large scoped reads are
+        # persisted on disk only until the caller commits that preparation scope.
         if size <= 1024**2:
             self.cache[key] = data
             while len(self.cache) > 16:
