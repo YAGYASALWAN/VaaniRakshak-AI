@@ -78,11 +78,13 @@ button:not(:disabled):hover { transform: translateY(-1px); filter: brightness(1.
 .segment.low { background: rgba(134, 239, 172, .55); }
 .segment.mid { background: rgba(253, 230, 138, .58); }
 .segment.high { background: rgba(252, 165, 165, .68); }
-.legend { display: flex; gap: 18px; color: var(--muted); font-size: 11px; }
+.segment.skipped { background: rgba(154, 171, 186, .22); border-style: dashed; border-color: rgba(154, 171, 186, .42); }
+.legend { display: flex; flex-wrap: wrap; gap: 18px; color: var(--muted); font-size: 11px; }
 .legend span { display: flex; align-items: center; gap: 7px; }
 .legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 .legend .low { background: var(--good); }
 .legend .high { background: var(--danger); }
+.legend .skipped { background: rgba(154, 171, 186, .4); border: 1px dashed var(--muted); }
 
 .final-card { margin-top: 18px; }
 .final-grid { display: grid; grid-template-columns: 220px 1fr; gap: 24px; align-items: center; }
