@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -89,8 +90,12 @@ class ManifestAudioDataset(Dataset):
         self.manifest_dir = manifest_dir
         self.training = split == "train"
         self.seed = seed
+        self.epoch = 0
         if not self.records:
             raise ValueError(f"Manifest contains no {split!r} records")
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
 
     def __len__(self):
         return len(self.records)
@@ -98,9 +103,12 @@ class ManifestAudioDataset(Dataset):
     def __getitem__(self, index):
         record = self.records[index]
         wave, rate = _read_audio(_resolve_audio_ref(record.audio_ref, self.manifest_dir))
-        # Per-record/epoch-independent deterministic crop seed keeps runs reproducible
-        # with num_workers=0 while still giving different crops across records.
-        rng = random.Random((self.seed << 32) ^ hash(record.record_id))
+        # Python's built-in hash() is intentionally process-randomized. Derive a
+        # stable per-record/per-epoch seed instead so crops vary across epochs but
+        # remain reproducible across independent runs with the same global seed.
+        material = f"{self.seed}:{self.epoch}:{record.record_id}".encode("utf-8")
+        crop_seed = int.from_bytes(hashlib.blake2s(material, digest_size=8).digest(), "little")
+        rng = random.Random(crop_seed)
         values, mask = _fixed_window(wave, rate, training=self.training, rng=rng)
         label = torch.tensor(1.0 if record.label == "spoof" else 0.0, dtype=torch.float32)
         return values, mask, label
@@ -201,8 +209,6 @@ def run(
     if not any(record.split == "train" for record in records) or not any(record.split == "dev" for record in records):
         raise ValueError("Training requires both train and dev manifest splits")
 
-    # The test split may be described by the manifest, but this training command
-    # never constructs a test dataset or reads test audio.
     train_data = ManifestAudioDataset(records, manifest.parent, "train", seed=seed)
     dev_data = ManifestAudioDataset(records, manifest.parent, "dev", seed=seed)
     sampler = _balanced_sampler(train_data, seed)
@@ -245,6 +251,7 @@ def run(
     )
 
     for epoch in range(1, epochs + 1):
+        train_data.set_epoch(epoch)
         _set_backbone_trainable(model, epoch > head_only_epochs)
         model.train()
         started = time.monotonic()
@@ -271,10 +278,7 @@ def run(
 
         dev_loss, dev_labels, dev_scores = evaluate(model, dev_loader, device)
         dev_eer, dev_eer_threshold = eer(dev_labels, dev_scores)
-        try:
-            threshold = threshold_for_max_fpr(dev_labels, dev_scores, max_dev_fpr)
-        except ValueError:
-            threshold = dev_eer_threshold
+        threshold = threshold_for_max_fpr(dev_labels, dev_scores, max_dev_fpr)
         dev_metrics = metrics_at_threshold(dev_labels, dev_scores, threshold)
         entry = {
             "epoch": epoch,
