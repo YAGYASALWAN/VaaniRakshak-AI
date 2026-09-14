@@ -24,7 +24,6 @@ class V2CalibrationTests(unittest.TestCase):
 
     def test_fit_temperature_reduces_nll_for_miscalibrated_scores(self):
         labels = [0, 0, 1, 1]
-        # Two extremely confident mistakes make temperature > 1 preferable.
         scores = [0.01, 0.99, 0.01, 0.99]
         before = binary_nll(labels, scores)
         temperature = fit_temperature(labels, scores)
@@ -32,6 +31,31 @@ class V2CalibrationTests(unittest.TestCase):
         after = binary_nll(labels, after_scores)
         self.assertGreater(temperature, 1.0)
         self.assertLess(after, before)
+
+    def test_recording_balanced_weighted_fit_improves_weighted_objective(self):
+        labels = [0, 0, 0, 1, 1]
+        scores = [0.05, 0.20, 0.95, 0.70, 0.90]
+        weights = [0.5, 0.25, 0.25, 0.5, 0.5]
+        before = binary_nll(labels, scores, sample_weights=weights)
+        temperature = fit_temperature(labels, scores, sample_weights=weights)
+        calibrated = apply_temperature(scores, temperature)
+        after = binary_nll(labels, calibrated, sample_weights=weights)
+        self.assertLessEqual(after, before + 1e-8)
+
+    def test_weighted_nll_respects_supplied_example_weights(self):
+        labels = [0, 1]
+        scores = [0.1, 0.6]
+        unweighted = binary_nll(labels, scores)
+        weighted = binary_nll(labels, scores, sample_weights=[0.9, 0.1])
+        self.assertLess(weighted, unweighted)
+
+    def test_invalid_sample_weights_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "match"):
+            fit_temperature([0, 1], [0.2, 0.8], sample_weights=[1.0])
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            fit_temperature([0, 1], [0.2, 0.8], sample_weights=[1.0, -1.0])
+        with self.assertRaisesRegex(ValueError, "positive total"):
+            fit_temperature([0, 1], [0.2, 0.8], sample_weights=[0.0, 0.0])
 
     def test_calibration_metrics_are_finite(self):
         labels = [0, 0, 1, 1]
