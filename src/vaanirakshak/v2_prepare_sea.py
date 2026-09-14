@@ -224,8 +224,13 @@ def prepare(
     # in train/dev is discarded from the less-protected partition.
     groups = _evaluation_first(list(plan["groups"]))
     for ordinal, group in enumerate(groups, 1):
+        scope_id = f"v2-sea-row-group:{group['unit']}"
         receipt_path = receipts_root / f"{group['unit']}.json"
         if receipt_path.exists():
+            # If a previous process committed the receipt and died before clearing
+            # its retry cache, the receipt is authoritative and the stale ranges
+            # can be removed without any remote reads.
+            client.clear_scope(scope_id)
             saved = json.loads(receipt_path.read_text(encoding="utf-8"))
             if saved.get("group") != group:
                 raise ValueError("Completed V2 SEA group identity changed")
@@ -242,79 +247,90 @@ def prepare(
 
         print(f"Materializing V2 SEA group {ordinal}/{len(groups)}", flush=True)
         completed = []
-        with RangeFile(client, sources[group["path"]]) as remote:
-            parquet = pq.ParquetFile(remote, pre_buffer=False)
-            for batch in parquet.iter_batches(row_groups=[group["row_group"]], batch_size=16, use_threads=False):
-                for row in batch.to_pylist():
-                    if row.get("language") != "en":
-                        continue
-                    if row.get("split") != group["split"] or row.get("label") not in {"bonafide", "spoof"}:
-                        raise ValueError("SEA row violates selected group contract")
-                    rid = row.get("row_id")
-                    audio = row.get("audio")
-                    raw = audio.get("bytes") if isinstance(audio, dict) else None
-                    if not isinstance(rid, str) or not rid or not isinstance(raw, bytes) or not raw:
-                        raise ValueError("SEA row is missing row_id or embedded audio bytes")
+        client.begin_scope(scope_id)
+        try:
+            with RangeFile(client, sources[group["path"]]) as remote:
+                parquet = pq.ParquetFile(remote, pre_buffer=False)
+                for batch in parquet.iter_batches(row_groups=[group["row_group"]], batch_size=16, use_threads=False):
+                    for row in batch.to_pylist():
+                        if row.get("language") != "en":
+                            continue
+                        if row.get("split") != group["split"] or row.get("label") not in {"bonafide", "spoof"}:
+                            raise ValueError("SEA row violates selected group contract")
+                        rid = row.get("row_id")
+                        audio = row.get("audio")
+                        raw = audio.get("bytes") if isinstance(audio, dict) else None
+                        if not isinstance(rid, str) or not rid or not isinstance(raw, bytes) or not raw:
+                            raise ValueError("SEA row is missing row_id or embedded audio bytes")
 
-                    split = SOURCE_SPLITS[group["split"]]
-                    label = str(row["label"])
-                    source_hash = _hash_bytes(raw)
-                    if source_hash in exact_hash_owner:
-                        duplicate_counts[f"exact_{split}"] += 1
-                        continue
+                        split = SOURCE_SPLITS[group["split"]]
+                        label = str(row["label"])
+                        source_hash = _hash_bytes(raw)
+                        if source_hash in exact_hash_owner:
+                            duplicate_counts[f"exact_{split}"] += 1
+                            continue
 
-                    encoded, audio_meta = _canonical_flac(raw)
-                    canonical_hash = _hash_bytes(encoded)
-                    if canonical_hash in canonical_hash_owner:
-                        duplicate_counts[f"canonical_{split}"] += 1
-                        continue
+                        encoded, audio_meta = _canonical_flac(raw)
+                        canonical_hash = _hash_bytes(encoded)
+                        if canonical_hash in canonical_hash_owner:
+                            duplicate_counts[f"canonical_{split}"] += 1
+                            continue
 
-                    generator_id = _generator(row, label)
-                    if label == "spoof" and generator_id is None:
-                        duplicate_counts[f"missing_generator_{split}"] += 1
-                        continue
+                        generator_id = _generator(row, label)
+                        if label == "spoof" and generator_id is None:
+                            duplicate_counts[f"missing_generator_{split}"] += 1
+                            continue
 
-                    relative = Path("audio") / "SEA-Spoof" / split / f"{rid}.flac"
-                    target = root / relative
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    temporary = target.with_suffix(".flac.tmp")
-                    temporary.write_bytes(encoded)
-                    temporary.replace(target)
+                        relative = Path("audio") / "SEA-Spoof" / split / f"{rid}.flac"
+                        target = root / relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        temporary = target.with_suffix(".flac.tmp")
+                        temporary.write_bytes(encoded)
+                        temporary.replace(target)
 
-                    record = AudioRecord(
-                        record_id=f"SEA:{rid}",
-                        label=label,  # type: ignore[arg-type]
-                        dataset="SEA-Spoof",
-                        split=split,  # type: ignore[arg-type]
-                        audio_ref=str(relative.as_posix()),
-                        language="en",
-                        speaker_id=_speaker(row, label),
-                        generator_id=generator_id,
-                        source_utterance_id=_source_utterance(row),
-                        content_sha256=canonical_hash,
-                        codec="FLAC/PCM_16",
-                        sample_rate=MODEL_SAMPLE_RATE,
-                    )
-                    receipt = {
-                        "source_repository": REPOSITORY,
-                        "source_revision": REVISION,
-                        "source_parquet": group["path"],
-                        "source_row_group": group["row_group"],
-                        "source_row_id": rid,
-                        "source_split": group["split"],
-                        "source_audio_sha256": source_hash,
-                        "source_model": row.get("source_model"),
-                        "source_dataset": row.get("source_dataset"),
-                        "speaker_or_voice": row.get("speaker_or_voice"),
-                        "utterance_id": row.get("utterance_id"),
-                        **audio_meta,
-                    }
-                    exact_hash_owner[source_hash] = split
-                    canonical_hash_owner[canonical_hash] = split
-                    records.append(record)
-                    completed.append({"manifest": record.as_dict(), "receipt": receipt})
-            parquet.close()
-        save_json(receipt_path, {"group": group, "records": completed})
+                        record = AudioRecord(
+                            record_id=f"SEA:{rid}",
+                            label=label,  # type: ignore[arg-type]
+                            dataset="SEA-Spoof",
+                            split=split,  # type: ignore[arg-type]
+                            audio_ref=str(relative.as_posix()),
+                            language="en",
+                            speaker_id=_speaker(row, label),
+                            generator_id=generator_id,
+                            source_utterance_id=_source_utterance(row),
+                            content_sha256=canonical_hash,
+                            codec="FLAC/PCM_16",
+                            sample_rate=MODEL_SAMPLE_RATE,
+                        )
+                        receipt = {
+                            "source_repository": REPOSITORY,
+                            "source_revision": REVISION,
+                            "source_parquet": group["path"],
+                            "source_row_group": group["row_group"],
+                            "source_row_id": rid,
+                            "source_split": group["split"],
+                            "source_audio_sha256": source_hash,
+                            "source_model": row.get("source_model"),
+                            "source_dataset": row.get("source_dataset"),
+                            "speaker_or_voice": row.get("speaker_or_voice"),
+                            "utterance_id": row.get("utterance_id"),
+                            **audio_meta,
+                        }
+                        exact_hash_owner[source_hash] = split
+                        canonical_hash_owner[canonical_hash] = split
+                        records.append(record)
+                        completed.append({"manifest": record.as_dict(), "receipt": receipt})
+                parquet.close()
+            # Receipt commit is the durable boundary. Only after it succeeds is the
+            # retry cache disposable.
+            save_json(receipt_path, {"group": group, "records": completed})
+        except BaseException:
+            # Keep completed remote ranges for a future retry. The transfer ledger
+            # remains fail-closed, but reused cached ranges will not be charged twice.
+            client.end_scope(scope_id, clear=False)
+            raise
+        else:
+            client.end_scope(scope_id, clear=True)
 
     manifest_path = root / "manifest.jsonl"
     audit = audit_manifest(records)
@@ -333,6 +349,12 @@ def prepare(
             "transfer_reserved_bytes": client.used,
             "duplicate_priority": ["test", "dev", "train"],
             "canonical_audio": "mono 16 kHz FLAC PCM_16",
+            "row_group_retry_cache": {
+                "enabled": True,
+                "scope": "selected SEA row group",
+                "cleared_after_receipt_commit": True,
+                "purpose": "reuse completed pinned remote ranges after an interrupted row-group materialization",
+            },
             "limitations": [
                 "Official SEA source split roles are retained as train/dev/test.",
                 "Generator identity comes from source_model and may be absent for some spoof rows; those rows are excluded.",
