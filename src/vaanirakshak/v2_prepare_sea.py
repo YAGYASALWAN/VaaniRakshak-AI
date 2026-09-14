@@ -227,13 +227,15 @@ def prepare(
         scope_id = f"v2-sea-row-group:{group['unit']}"
         receipt_path = receipts_root / f"{group['unit']}.json"
         if receipt_path.exists():
-            # If a previous process committed the receipt and died before clearing
-            # its retry cache, the receipt is authoritative and the stale ranges
-            # can be removed without any remote reads.
-            client.clear_scope(scope_id)
             saved = json.loads(receipt_path.read_text(encoding="utf-8"))
             if saved.get("group") != group:
+                # A mismatched/corrupt receipt is not authoritative. Preserve any
+                # retry cache so the operator can investigate/recover safely.
                 raise ValueError("Completed V2 SEA group identity changed")
+            # If a previous process committed the receipt and died before clearing
+            # its retry cache, the validated receipt is authoritative and the stale
+            # remote ranges can now be removed without any network read.
+            client.clear_scope(scope_id)
             for value in saved.get("records", []):
                 record = AudioRecord.from_dict(value["manifest"])
                 records.append(record)
