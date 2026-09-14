@@ -8,6 +8,12 @@ V2 is deliberately product-first:
 
 The detector is replaceable. A model does not become the V2 product detector merely because it trains successfully.
 
+Detailed companion documents:
+
+- `docs/V2_TRAINING_RECOVERY.md` — interruption/resume contract for WavLM training;
+- `docs/V2_CALIBRATION.md` — development-only temperature calibration and probability interpretation;
+- `docs/V2_CALL_AUDIT_SCHEMA.md` — privacy-preserving live call audit format.
+
 ## 0. Branch and environment
 
 Work on the V2 branch, not V1/main:
@@ -125,6 +131,8 @@ The builder:
 - keeps known speaker/source-utterance provenance;
 - refuses the completed manifest if V2 leakage checks fail.
 
+Completed row groups have receipts and are reusable on rerun. An interruption inside a row group can still require that incomplete group to be read again; the byte ledger remains fail-closed and may therefore consume additional reserved transfer budget. Do not delete the ledger to hide repeated transfer.
+
 ## 3. Audit the ordinary SEA manifest
 
 ```powershell
@@ -175,38 +183,96 @@ Important outputs:
 ```text
 models/v2_wavlm_sea/
   best.pt
+  last.pt
   run_config.json
   history.json
 ```
 
-`best.pt` is already in the checkpoint schema understood by the live V2 server. No conversion step is required.
+`best.pt` is the current detector candidate. `last.pt` is the resumable completed-epoch training state. It contains model/optimizer/AMP/RNG/sampler state plus the exported WavLM architecture configuration, allowing reconstruction from saved configuration instead of calling `from_pretrained()` again during resume.
 
-## 5. Frozen in-domain evaluation
+If a run is interrupted, use the same command and arguments plus `--resume`:
+
+```powershell
+python -m vaanirakshak.v2_train_ssl `
+  --manifest data/v2_sea_en/manifest.jsonl `
+  --output models/v2_wavlm_sea `
+  --device cuda `
+  --epochs 8 `
+  --batch-size 2 `
+  --gradient-accumulation 4 `
+  --resume
+```
+
+Resume occurs from the last completed epoch. A partially completed epoch is deliberately rerun. Changed manifests or protected training hyperparameters are treated as a different experiment and are refused. See `docs/V2_TRAINING_RECOVERY.md` for the full recovery contract.
+
+## 5. Optional development-only probability calibration
+
+The raw WavLM sigmoid output is a detector score, not automatically a calibrated probability. If VaaniRakshak will display or export a probability interpretation, fit temperature scaling on development data only and create a separate checkpoint:
+
+```powershell
+python -m vaanirakshak.v2_calibrate `
+  --manifest data/v2_sea_en/manifest.jsonl `
+  --checkpoint models/v2_wavlm_sea/best.pt `
+  --output-checkpoint models/v2_wavlm_sea/best_calibrated.pt `
+  --device cuda
+```
+
+The calibration command:
+
+- reads only `split=dev` for fitting;
+- verifies the manifest fingerprint against checkpoint training provenance;
+- never overwrites the source checkpoint;
+- fits one positive temperature by development-set NLL;
+- transforms the existing threshold through the same monotonic mapping;
+- verifies the operating-point decisions are preserved;
+- records source-checkpoint SHA-256 and calibration provenance;
+- records `test_data_used = false`.
+
+Frozen recording evaluation aggregates overlapping-window evidence with `median_logit`, not arithmetic median probability. That makes the recording aggregation commute with temperature scaling and preserves the transformed operating point even for recordings with an even number of windows.
+
+See `docs/V2_CALIBRATION.md` for the complete interpretation and validation rules.
+
+## 6. Frozen in-domain evaluation
 
 After training, freeze the checkpoint. Do not change its threshold after inspecting test performance.
+
+Evaluate the raw detector first:
 
 ```powershell
 python -m vaanirakshak.v2_evaluate `
   --manifest data/v2_sea_en/manifest.jsonl `
   --checkpoint models/v2_wavlm_sea/best.pt `
-  --output reports/v2_sea_in_domain `
+  --output reports/v2_sea_in_domain_raw `
   --scenario standard `
   --device cuda
 ```
 
-The evaluator uses the threshold stored in the checkpoint. It does not choose a new test threshold.
+If a calibrated checkpoint was created, evaluate it separately on the same untouched test split:
+
+```powershell
+python -m vaanirakshak.v2_evaluate `
+  --manifest data/v2_sea_en/manifest.jsonl `
+  --checkpoint models/v2_wavlm_sea/best_calibrated.pt `
+  --output reports/v2_sea_in_domain_calibrated `
+  --scenario standard `
+  --device cuda
+```
+
+The evaluator uses the threshold stored in the selected checkpoint. It does not choose a new test threshold.
 
 Outputs include:
 
 ```text
-reports/v2_sea_in_domain/
+reports/.../
   evaluation.json
   scores.jsonl
 ```
 
 Report ROC-AUC, PR-AUC, EER, precision, recall, F1, false-positive rate and false-negative rate. Do not report accuracy alone.
 
-## 6. Build a strict unseen-generator experiment
+The evaluator also reports NLL, Brier score and ECE. For an uncalibrated checkpoint these are diagnostic properties of a detector score and must not be described as probability quality. For a development-calibrated checkpoint they are untouched-test evidence of whether probability calibration generalized.
+
+## 7. Build a strict unseen-generator experiment
 
 First audit/summarize the SEA manifest and inspect the generator IDs under `spoof_generators`.
 
@@ -231,8 +297,6 @@ python scripts/v2_manifest.py audit `
   --scenario unseen-generator
 ```
 
-### Important
-
 The unseen-generator scenario requires a **new checkpoint trained on this generator-held-out manifest**:
 
 ```powershell
@@ -255,7 +319,9 @@ python -m vaanirakshak.v2_evaluate `
 
 Do not train on all generators and then describe one of those same generators as unseen.
 
-## 7. External cross-dataset smoke tests
+If probability calibration is required for this separately trained unseen-generator experiment, fit it on that scenario's own development split. Do not reuse a temperature merely because it was fitted for a different training experiment.
+
+## 8. External cross-dataset smoke tests
 
 Two evaluation-only datasets are pinned in `configs/v2_external_benchmarks.json`:
 
@@ -285,7 +351,9 @@ python -m vaanirakshak.v2_evaluate `
 
 A smoke subset is for pipeline/debugging only. It must not be presented as full benchmark performance.
 
-## 8. Full ASVspoof 2021 LA evaluation
+A SEA-development-calibrated checkpoint may also be evaluated unchanged on external datasets to measure calibration transfer. Do not fit a new temperature on an external test benchmark and then call that benchmark a clean held-out test.
+
+## 9. Full ASVspoof 2021 LA evaluation
 
 Omit `--max-per-label`:
 
@@ -297,9 +365,9 @@ python -m vaanirakshak.v2_prepare_benchmark `
 
 Then run the frozen evaluator using the SEA checkpoint as above.
 
-Do not tune the model or threshold after reading this result if the result is intended to remain a clean external generalization test.
+Do not tune the model, threshold or calibration temperature after reading this result if the result is intended to remain a clean external generalization test.
 
-## 9. ASVspoof 5 smoke and full evaluation
+## 10. ASVspoof 5 smoke and full evaluation
 
 Smoke:
 
@@ -314,7 +382,7 @@ Full benchmark: omit `--max-per-label`.
 
 ASVspoof 5 is large. Plan storage and evaluation compute before materializing the full test package.
 
-## 10. Frozen duration / telephony / noise robustness suite
+## 11. Frozen duration / telephony / noise robustness suite
 
 Run the robustness suite against a **frozen checkpoint**. The threshold saved in the checkpoint is reused unchanged for every condition.
 
@@ -361,6 +429,8 @@ The report contains absolute metrics for each condition plus degradation relativ
 - false-positive rate;
 - false-negative rate.
 
+For a calibrated checkpoint, probability quality under stress should also be inspected rather than assuming clean-development calibration remains valid after codec/noise/channel shifts.
+
 The noise tests use deterministic synthetic white noise. They are a controlled engineering stress test, not a substitute for a later real-background-noise corpus.
 
 The same evaluator can be run on an external benchmark. Example:
@@ -377,9 +447,9 @@ python -m vaanirakshak.v2_robustness_eval `
 
 Smoke results remain non-reportable as full-benchmark performance.
 
-## 11. Plug the trained V2 checkpoint into the live product
+## 12. Plug the trained V2 checkpoint into the live product
 
-PowerShell:
+PowerShell using the raw checkpoint:
 
 ```powershell
 $env:VAANIRAKSHAK_V2_CHECKPOINT = "models/v2_wavlm_sea/best.pt"
@@ -389,19 +459,28 @@ $env:VAANIRAKSHAK_V2_VAD_AGGRESSIVENESS = "2"
 python -m vaanirakshak.v2_server
 ```
 
+Or, after dev-only calibration has been created and validated:
+
+```powershell
+$env:VAANIRAKSHAK_V2_CHECKPOINT = "models/v2_wavlm_sea/best_calibrated.pt"
+$env:VAANIRAKSHAK_V2_DEVICE = "cuda"
+$env:VAANIRAKSHAK_V2_VAD = "webrtc"
+python -m vaanirakshak.v2_server
+```
+
 Open:
 
 `http://127.0.0.1:8766`
 
-The status panel should now report a trained detector and `webrtc-vad-m2` rather than MOCK/energy mode.
+The status panel should now report a trained detector and `webrtc-vad-m2` rather than MOCK/energy mode. It also states whether detector scores are calibrated probabilities.
 
-A trained detector exposes a SHA-256 fingerprint of the exact loaded checkpoint. The browser audit export preserves that fingerprint along with per-window evidence and latency, while excluding raw microphone audio.
+A trained detector exposes a SHA-256 fingerprint of the exact loaded checkpoint. The browser audit export preserves that fingerprint, detector/calibration metadata, per-window evidence and latency, while excluding raw microphone audio.
 
 Because V2 advances by a 2-second hop, the live dashboard also compares observed mean per-window processing time against a 2000 ms hop budget. This is an observed scheduling signal, not a worst-case concurrency guarantee.
 
 If checkpoint or speech-gate loading fails, the V2 server deliberately enters a configuration-error state. It does **not** silently substitute the mock detector or another speech gate.
 
-## 12. Legacy V1 checkpoint integration (debug only)
+## 13. Legacy V1 checkpoint integration (debug only)
 
 V1 checkpoints are refused by default.
 
@@ -415,7 +494,7 @@ python -m vaanirakshak.v2_server
 
 The UI/server labels this mode `legacy-experimental`. This is not a V2 model-quality claim.
 
-## 13. Release gate before calling the detector V2-ready
+## 14. Release gate before calling the detector V2-ready
 
 A checkpoint should not be promoted to the SIH-facing detector until we have, at minimum:
 
@@ -427,16 +506,20 @@ A checkpoint should not be promoted to the SIH-facing detector until we have, at
 6. duration robustness results;
 7. noise robustness results;
 8. false-positive analysis;
-9. live inference latency measurements;
-10. a checkpoint whose threshold was selected on development data only.
+9. live inference latency measurements showing whether observed processing stays within the 2-second hop budget;
+10. a checkpoint whose threshold was selected on development data only;
+11. reproducible training provenance and a tested recovery state;
+12. if the product claims probability semantics: dev-only calibration provenance plus untouched-test NLL, Brier score and ECE, including cross-domain/calibration-shift inspection.
 
 ## Current limitations
 
-- WebRTC VAD is now the default live speech gate, but VAD only identifies likely speech/non-speech; it is not evidence that speech is human or synthetic.
+- WebRTC VAD is the default live speech gate, but VAD only identifies likely speech/non-speech; it is not evidence that speech is human or synthetic.
 - The energy-v1 gate remains available only for fallback/debugging.
-- The call-level risk formula is a transparent product heuristic, not a calibrated probability model.
-- WavLM V2 code and checkpoint plumbing exist, but model quality is unknown until real training/evaluation runs are completed.
-- Detector scores are explicitly marked uncalibrated unless a future checkpoint provides validated calibration.
+- The call-level risk formula is a transparent product heuristic, not a calibrated probability of fraud or fakery.
+- WavLM V2 code, recovery, calibration and checkpoint plumbing exist, but model quality is unknown until real training/evaluation runs are completed.
+- Raw detector scores are explicitly marked uncalibrated. A checkpoint is marked calibrated only when it carries validated temperature-scaling metadata fitted on development data.
+- Development-set calibration may degrade under external datasets, telephony codecs, noise or other distribution shift; this must be measured.
 - Controlled white-noise robustness is not equivalent to real environmental-noise validation.
 - SEA-Spoof use is subject to its approved non-commercial academic research terms.
+- Completed SEA row groups are resumable, but an interrupted row group can consume additional transfer budget when repeated.
 - A green CI run validates code/tests on the CI environment; it does not substitute for gated-dataset preparation or GPU model training.
