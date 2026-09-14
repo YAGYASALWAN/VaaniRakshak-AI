@@ -12,10 +12,27 @@ from vaanirakshak.v2_prepare_sea import (
     _canonical_flac,
     _evaluation_first,
     _generator,
+    _scan_groups,
     _source_utterance,
     _speaker,
     prepare,
 )
+
+
+class _ScopeClient:
+    used = 0
+
+    def __init__(self):
+        self.events = []
+
+    def begin_scope(self, scope_id):
+        self.events.append(("begin", scope_id))
+
+    def end_scope(self, scope_id, *, clear):
+        self.events.append(("end", scope_id, clear))
+
+    def clear_scope(self, scope_id):
+        self.events.append(("clear", scope_id))
 
 
 class V2SEAPreparationTests(unittest.TestCase):
@@ -68,22 +85,23 @@ class V2SEAPreparationTests(unittest.TestCase):
         self.assertEqual([group["split"] for group in ordered], ["evaluation", "evaluation", "validation", "train"])
         self.assertEqual([group["path"] for group in ordered[:2]], ["a", "c"])
 
+    def test_failed_metadata_scan_keeps_retry_scope_for_next_run(self):
+        item = {"path": "data/train/fake.parquet", "size": 4096, "split": "train"}
+        source = {"repository": REPOSITORY, "revision": REVISION, "files": [item]}
+        client = _ScopeClient()
+
+        with tempfile.TemporaryDirectory() as folder, patch(
+            "pyarrow.parquet.ParquetFile", side_effect=RuntimeError("simulated metadata crash")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated metadata crash"):
+                _scan_groups(Path(folder), source, client, budget=1_000_000_000)
+
+        self.assertEqual(len(client.events), 2)
+        self.assertEqual(client.events[0][0], "begin")
+        self.assertTrue(client.events[0][1].startswith("v2-sea-metadata:"))
+        self.assertEqual(client.events[1], ("end", client.events[0][1], False))
+
     def test_failed_row_group_keeps_retry_scope_for_next_run(self):
-        class FakeClient:
-            used = 0
-
-            def __init__(self):
-                self.events = []
-
-            def begin_scope(self, scope_id):
-                self.events.append(("begin", scope_id))
-
-            def end_scope(self, scope_id, *, clear):
-                self.events.append(("end", scope_id, clear))
-
-            def clear_scope(self, scope_id):
-                self.events.append(("clear", scope_id))
-
         group = {
             "unit": "unit-a",
             "path": "data/train/fake.parquet",
@@ -98,7 +116,7 @@ class V2SEAPreparationTests(unittest.TestCase):
             "revision": REVISION,
             "files": [{"path": group["path"], "size": 4096, "split": "train"}],
         }
-        client = FakeClient()
+        client = _ScopeClient()
         plan = {"groups": [group]}
 
         with tempfile.TemporaryDirectory() as folder, patch(
