@@ -7,6 +7,8 @@ Connect a trained checkpoint:
     VAANIRAKSHAK_V2_CHECKPOINT=/path/to/best.pt python -m vaanirakshak.v2_server
 
 Legacy V1 checkpoints are refused unless VAANIRAKSHAK_ALLOW_LEGACY=1 is set.
+The live product defaults to WebRTC VAD; set VAANIRAKSHAK_V2_VAD=energy only
+for fallback/debugging.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from vaanirakshak.v2_audio import MODEL_SAMPLE_RATE
+from vaanirakshak.v2_audio import MODEL_SAMPLE_RATE, build_speech_gate
 from vaanirakshak.v2_detectors import CheckpointDetector
 from vaanirakshak.v2_engine import HOP_SECONDS, WINDOW_SECONDS, MockDetector, StreamingSession
 
@@ -27,7 +29,7 @@ from vaanirakshak.v2_engine import HOP_SECONDS, WINDOW_SECONDS, MockDetector, St
 ROOT = Path(__file__).resolve().parents[2]
 V2_FRONTEND = ROOT / "frontend" / "v2"
 
-app = FastAPI(title="VaaniRakshak V2", version="2.2.0-alpha")
+app = FastAPI(title="VaaniRakshak V2", version="2.3.0-alpha")
 app.mount("/assets", StaticFiles(directory=V2_FRONTEND), name="assets")
 
 
@@ -45,12 +47,25 @@ def _load_configured_detector():
     try:
         return CheckpointDetector(checkpoint, device=device, allow_legacy=allow_legacy), None
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
-        # Never silently fall back to the mock after the operator explicitly asked
-        # for a checkpoint. A broken detector configuration must be visible.
+        return None, str(exc)
+
+
+def _load_configured_speech_gate():
+    mode = os.environ.get("VAANIRAKSHAK_V2_VAD", "webrtc").strip().lower()
+    try:
+        aggressiveness = int(os.environ.get("VAANIRAKSHAK_V2_VAD_AGGRESSIVENESS", "2"))
+        return build_speech_gate(mode, aggressiveness=aggressiveness), None
+    except (TypeError, ValueError, RuntimeError) as exc:
         return None, str(exc)
 
 
 DETECTOR, DETECTOR_ERROR = _load_configured_detector()
+SPEECH_GATE, SPEECH_GATE_ERROR = _load_configured_speech_gate()
+
+
+def _configuration_error() -> str | None:
+    errors = [value for value in (DETECTOR_ERROR, SPEECH_GATE_ERROR) if value]
+    return "; ".join(errors) if errors else None
 
 
 def _origin_allowed(websocket: WebSocket) -> bool:
@@ -61,17 +76,18 @@ def _origin_allowed(websocket: WebSocket) -> bool:
 
 
 def _detector_status() -> dict:
-    if DETECTOR is None:
+    error = _configuration_error()
+    if DETECTOR is None or SPEECH_GATE is None:
         return {
             "ready": False,
             "analysis_mode": "configuration-error",
-            "model": None,
-            "error": DETECTOR_ERROR,
+            "model": getattr(DETECTOR, "name", None),
+            "error": error,
             "streaming": True,
             "window_seconds": WINDOW_SECONDS,
             "hop_seconds": HOP_SECONDS,
             "model_sample_rate": MODEL_SAMPLE_RATE,
-            "quality_gate": "energy-v1",
+            "quality_gate": getattr(SPEECH_GATE, "name", None),
         }
 
     status = {
@@ -84,8 +100,8 @@ def _detector_status() -> dict:
         "window_seconds": WINDOW_SECONDS,
         "hop_seconds": HOP_SECONDS,
         "model_sample_rate": MODEL_SAMPLE_RATE,
-        "quality_gate": "energy-v1",
-        "notice": DETECTOR.notice,
+        "quality_gate": SPEECH_GATE.name,
+        "notice": DETECTOR.notice + f" Speech gate: {SPEECH_GATE.name}.",
     }
     info = getattr(DETECTOR, "info", None)
     if info is not None:
@@ -109,10 +125,10 @@ async def analyze_stream(websocket: WebSocket) -> None:
     if not _origin_allowed(websocket):
         await websocket.close(code=1008, reason="Open VaaniRakshak from localhost")
         return
-    if DETECTOR is None:
+    if DETECTOR is None or SPEECH_GATE is None:
         await websocket.accept()
-        await websocket.send_json({"type": "error", "message": DETECTOR_ERROR or "Detector unavailable"})
-        await websocket.close(code=1011, reason="Detector configuration error")
+        await websocket.send_json({"type": "error", "message": _configuration_error() or "V2 configuration unavailable"})
+        await websocket.close(code=1011, reason="V2 configuration error")
         return
 
     await websocket.accept()
@@ -127,6 +143,7 @@ async def analyze_stream(websocket: WebSocket) -> None:
             "model": DETECTOR.name,
             "threshold": DETECTOR.threshold,
             "calibrated_probability": bool(DETECTOR.calibrated_probability),
+            "speech_gate": SPEECH_GATE.name,
         }
     )
 
@@ -150,7 +167,11 @@ async def analyze_stream(websocket: WebSocket) -> None:
                         continue
                     try:
                         sample_rate = int(command["sample_rate"])
-                        session = StreamingSession(detector=DETECTOR, sample_rate=sample_rate)
+                        session = StreamingSession(
+                            detector=DETECTOR,
+                            sample_rate=sample_rate,
+                            speech_gate=SPEECH_GATE,
+                        )
                     except (KeyError, TypeError, ValueError) as exc:
                         await websocket.send_json({"type": "error", "message": str(exc)})
                         continue
@@ -165,6 +186,7 @@ async def analyze_stream(websocket: WebSocket) -> None:
                             "threshold": DETECTOR.threshold,
                             "analysis_mode": DETECTOR.mode,
                             "model": DETECTOR.name,
+                            "speech_gate": SPEECH_GATE.name,
                             "notice": session.live_summary()["notice"],
                         }
                     )
