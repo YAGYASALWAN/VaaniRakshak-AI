@@ -6,7 +6,9 @@ cross-dataset evaluation belong in a separate frozen-checkpoint command.
 
 A run writes ``last.pt`` after each completed epoch. Use ``--resume`` with the
 same output directory to restore model, optimizer, AMP, sampler and RNG state.
-Resume is refused if the manifest or training contract changed.
+Resume is refused if the manifest or training contract changed. The resumable
+state also stores the exported WavLM architecture config so recovery does not
+need to redownload/re-resolve the pretrained backbone.
 """
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ from vaanirakshak.v2_ssl_model import ARCHITECTURE, DEFAULT_BACKBONE, WavLMAntiS
 
 
 WINDOW_SAMPLES = 4 * MODEL_SAMPLE_RATE
-TRAINING_STATE_SCHEMA = "vaanirakshak-v2-training-state-v1"
+TRAINING_STATE_SCHEMA = "vaanirakshak-v2-training-state-v2"
 
 
 def _resolve_audio_ref(audio_ref: str, manifest_dir: Path) -> Path:
@@ -204,10 +206,61 @@ def _validate_resume_state(state: dict, *, contract: dict, fingerprint: str) -> 
         raise ValueError("Resume manifest differs from the saved training run")
     if state.get("training_contract") != contract:
         raise ValueError("Resume hyperparameters/backbone differ from the saved training run")
-    required = {"model", "optimizer", "scaler", "epoch", "history", "best_eer", "torch_rng", "sampler_rng"}
+
+    required = {
+        "model",
+        "optimizer",
+        "scaler",
+        "epoch",
+        "history",
+        "best_eer",
+        "torch_rng",
+        "sampler_rng",
+        "backbone_config",
+        "model_spec",
+    }
     missing = sorted(required - set(state))
     if missing:
         raise ValueError(f"Resume state is missing required fields: {missing}")
+
+    epoch = state.get("epoch")
+    max_epochs = int(contract.get("epochs", 0))
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or not 1 <= epoch <= max_epochs:
+        raise ValueError("Resume state has an invalid completed epoch")
+
+    history = state.get("history")
+    if not isinstance(history, list) or len(history) != epoch:
+        raise ValueError("Resume history does not match the completed epoch")
+    history_epochs = []
+    for entry in history:
+        if not isinstance(entry, dict):
+            raise ValueError("Resume history contains a non-object entry")
+        value = entry.get("epoch")
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("Resume history contains an invalid epoch")
+        history_epochs.append(value)
+    if history_epochs != list(range(1, epoch + 1)):
+        raise ValueError("Resume history epochs are not contiguous from epoch 1")
+
+    try:
+        best_eer = float(state.get("best_eer"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Resume state has an invalid best_eer") from exc
+    if not math.isfinite(best_eer) or not 0.0 <= best_eer <= 1.0:
+        raise ValueError("Resume state has an invalid best_eer")
+
+    if not isinstance(state.get("backbone_config"), dict) or not isinstance(state.get("model_spec"), dict):
+        raise ValueError("Resume state is missing a valid exported WavLM model configuration")
+
+
+def _load_training_state(path: Path) -> dict:
+    try:
+        state = torch.load(path, map_location="cpu", weights_only=True)
+    except Exception as exc:
+        raise ValueError("Could not load last.pt; the resumable training state may be incomplete or corrupt") from exc
+    if not isinstance(state, dict):
+        raise ValueError("last.pt did not contain a training-state dictionary")
+    return state
 
 
 def run(
@@ -251,8 +304,8 @@ def run(
     best_path = output / "best.pt"
 
     if resume:
-        if not run_config_path.is_file() or not last_path.is_file():
-            raise ValueError("--resume requires existing run_config.json and last.pt in the output directory")
+        if not run_config_path.is_file() or not last_path.is_file() or not best_path.is_file():
+            raise ValueError("--resume requires existing run_config.json, last.pt and best.pt in the output directory")
     elif run_config_path.exists() or last_path.exists() or best_path.exists():
         raise ValueError("Output directory already contains a V2 training run; use a new directory or --resume")
 
@@ -295,23 +348,16 @@ def run(
     )
     dev_loader = DataLoader(dev_data, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=device == "cuda")
 
-    model = WavLMAntiSpoof.from_pretrained(backbone_id).to(device)
-    if gradient_checkpointing:
-        enable = getattr(model.backbone, "gradient_checkpointing_enable", None)
-        if callable(enable):
-            enable()
-        else:
-            raise ValueError("Selected WavLM backbone does not support gradient checkpointing")
-
-    optimizer = torch.optim.AdamW(_parameter_groups(model, backbone_lr, head_lr), weight_decay=weight_decay)
-    scaler = torch.amp.GradScaler("cuda", enabled=device == "cuda")
-
+    resume_state: dict | None = None
     history: list[dict] = []
     best_eer = math.inf
     start_epoch = 1
 
     if resume:
-        saved_config = json.loads(run_config_path.read_text(encoding="utf-8"))
+        try:
+            saved_config = json.loads(run_config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Could not read run_config.json for resume") from exc
         if saved_config.get("manifest_fingerprint") != fingerprint:
             raise ValueError("run_config manifest fingerprint differs from the requested manifest")
         if saved_config.get("training_contract") != contract:
@@ -320,21 +366,17 @@ def run(
         if not run_name:
             raise ValueError("run_config is missing run_name")
 
-        state = torch.load(last_path, map_location="cpu", weights_only=True)
-        _validate_resume_state(state, contract=contract, fingerprint=fingerprint)
-        model.load_state_dict(state["model"])
-        optimizer.load_state_dict(state["optimizer"])
-        scaler.load_state_dict(state["scaler"])
-        history = list(state["history"])
-        best_eer = float(state["best_eer"])
-        start_epoch = int(state["epoch"]) + 1
-        torch.set_rng_state(state["torch_rng"])
-        sampler_generator.set_state(state["sampler_rng"])
-        if device == "cuda" and state.get("cuda_rng"):
-            torch.cuda.set_rng_state_all(state["cuda_rng"])
-        print(f"Resuming {run_name} from completed epoch {start_epoch - 1}/{epochs}", flush=True)
+        resume_state = _load_training_state(last_path)
+        _validate_resume_state(resume_state, contract=contract, fingerprint=fingerprint)
+        try:
+            model = WavLMAntiSpoof.from_exported_config(
+                resume_state["backbone_config"], resume_state["model_spec"]
+            ).to(device)
+        except Exception as exc:
+            raise ValueError("Could not reconstruct WavLM from the saved resume configuration") from exc
     else:
         run_name = f"wavlm_v2_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        model = WavLMAntiSpoof.from_pretrained(backbone_id).to(device)
         run_config = {
             "run_name": run_name,
             **contract,
@@ -346,12 +388,38 @@ def run(
             "threshold_policy": "maximize spoof recall subject to development-set FPR budget",
             "test_data_used_during_training": False,
             "resume_granularity": "last completed epoch",
+            "resume_model_reconstruction": "offline from last.pt exported config",
         }
         _write_json(run_config_path, run_config)
 
+    if gradient_checkpointing:
+        enable = getattr(model.backbone, "gradient_checkpointing_enable", None)
+        if callable(enable):
+            enable()
+        else:
+            raise ValueError("Selected WavLM backbone does not support gradient checkpointing")
+
+    optimizer = torch.optim.AdamW(_parameter_groups(model, backbone_lr, head_lr), weight_decay=weight_decay)
+    scaler = torch.amp.GradScaler("cuda", enabled=device == "cuda")
+    exported_model_config = model.export_model_config()
+
+    if resume_state is not None:
+        try:
+            model.load_state_dict(resume_state["model"])
+            optimizer.load_state_dict(resume_state["optimizer"])
+            scaler.load_state_dict(resume_state["scaler"])
+            history = list(resume_state["history"])
+            best_eer = float(resume_state["best_eer"])
+            start_epoch = int(resume_state["epoch"]) + 1
+            torch.set_rng_state(resume_state["torch_rng"])
+            sampler_generator.set_state(resume_state["sampler_rng"])
+            if device == "cuda" and resume_state.get("cuda_rng"):
+                torch.cuda.set_rng_state_all(resume_state["cuda_rng"])
+        except Exception as exc:
+            raise ValueError("Could not restore model/optimizer/RNG state from last.pt") from exc
+        print(f"Resuming {run_name} from completed epoch {start_epoch - 1}/{epochs}", flush=True)
+
     if start_epoch > epochs:
-        if not best_path.is_file():
-            raise RuntimeError("Resumed run is complete but best.pt is missing")
         print(f"Training already completed through epoch {epochs}; using {best_path}", flush=True)
         return best_path
 
@@ -413,14 +481,13 @@ def run(
 
         if dev_eer < best_eer:
             best_eer = dev_eer
-            export = model.export_model_config()
             checkpoint = {
                 "schema": V2_CHECKPOINT_SCHEMA,
                 "architecture": ARCHITECTURE,
                 "frontend": RAW_FRONTEND,
                 "model": model.state_dict(),
-                "backbone_config": export["backbone_config"],
-                "model_spec": export["model_spec"],
+                "backbone_config": exported_model_config["backbone_config"],
+                "model_spec": exported_model_config["model_spec"],
                 "threshold": float(threshold),
                 "calibrated_probability": False,
                 "model_name": run_name,
@@ -445,6 +512,8 @@ def run(
             "schema": TRAINING_STATE_SCHEMA,
             "manifest_fingerprint": fingerprint,
             "training_contract": contract,
+            "backbone_config": exported_model_config["backbone_config"],
+            "model_spec": exported_model_config["model_spec"],
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scaler": scaler.state_dict(),
