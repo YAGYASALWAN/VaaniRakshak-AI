@@ -45,6 +45,21 @@ def _directory_bytes(path: Path) -> tuple[int, int]:
     return files, total
 
 
+def _matching_files_bytes(path: Path, pattern: str) -> tuple[int, int]:
+    if not path.is_dir():
+        return 0, 0
+    files = 0
+    total = 0
+    for item in path.rglob(pattern):
+        try:
+            if item.is_file():
+                files += 1
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return files, total
+
+
 def inspect(data_root: Path, *, scan_audio: bool = False) -> dict:
     data_root = data_root.expanduser().resolve()
     issues: list[str] = []
@@ -74,7 +89,8 @@ def inspect(data_root: Path, *, scan_audio: bool = False) -> dict:
     plan_path = data_root / "v2_sea_plan.json"
     planned_groups: set[str] = set()
     plan_summary = None
-    if plan_path.is_file():
+    plan_present = plan_path.is_file()
+    if plan_present:
         plan = _read_json(plan_path, label="v2_sea_plan.json", issues=issues)
         if isinstance(plan, dict) and isinstance(plan.get("groups"), list):
             groups = plan["groups"]
@@ -126,13 +142,15 @@ def inspect(data_root: Path, *, scan_audio: bool = False) -> dict:
 
     manifest_path = data_root / "manifest.jsonl"
     manifest_summary = None
-    manifest_complete = False
+    manifest_audit_ok = False
+    manifest_record_count = None
     if manifest_path.is_file():
         try:
             records = load_jsonl(manifest_path)
             audit = audit_manifest(records)
+            manifest_record_count = len(records)
             manifest_summary = {
-                "records": len(records),
+                "records": manifest_record_count,
                 "fingerprint": manifest_fingerprint(records),
                 "audit_ok": audit.ok,
                 "audit_errors": list(audit.errors),
@@ -141,9 +159,19 @@ def inspect(data_root: Path, *, scan_audio: bool = False) -> dict:
             }
             if audit.errors:
                 issues.extend(f"manifest audit: {message}" for message in audit.errors)
-            manifest_complete = audit.ok
+            manifest_audit_ok = audit.ok
         except (OSError, ValueError) as exc:
             issues.append(f"manifest.jsonl cannot be loaded/audited: {exc}")
+
+    planned_count = len(planned_groups)
+    completed_count = len(completed_groups)
+    all_planned_groups_committed = (not plan_present) or (planned_count > 0 and completed_count >= planned_count)
+
+    if manifest_audit_ok and planned_count > 0 and completed_count >= planned_count and manifest_record_count != receipt_records:
+        issues.append(
+            "manifest record count differs from committed receipt record count; "
+            "do not treat this preparation directory as complete"
+        )
 
     audio_summary = {
         "scanned": bool(scan_audio),
@@ -151,11 +179,15 @@ def inspect(data_root: Path, *, scan_audio: bool = False) -> dict:
         "bytes": None,
     }
     if scan_audio:
-        audio_files, audio_bytes = _directory_bytes(data_root / "audio")
+        audio_files, audio_bytes = _matching_files_bytes(data_root / "audio", "*.flac")
         audio_summary.update({"flac_files": audio_files, "bytes": audio_bytes})
+        if receipt_records and audio_files < receipt_records:
+            warnings.append(
+                "audio scan found fewer FLAC files than committed receipt records; "
+                "verify the preparation directory before training"
+            )
 
-    planned_count = len(planned_groups)
-    completed_count = len(completed_groups)
+    manifest_complete = manifest_audit_ok and all_planned_groups_committed
     if issues:
         state = "blocked"
     elif manifest_complete:
@@ -200,6 +232,7 @@ def inspect(data_root: Path, *, scan_audio: bool = False) -> dict:
         "receipts": {
             "completed_groups": completed_count,
             "planned_groups": planned_count,
+            "all_planned_groups_committed": all_planned_groups_committed,
             "receipt_records": receipt_records,
             "invalid_receipts": invalid_receipts,
         },
@@ -217,7 +250,7 @@ def inspect(data_root: Path, *, scan_audio: bool = False) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=ROOT / "data" / "v2_sea_en")
-    parser.add_argument("--scan-audio", action="store_true", help="Count files/bytes under audio/ (can be slow on a large corpus).")
+    parser.add_argument("--scan-audio", action="store_true", help="Count FLAC files/bytes under audio/ (can be slow on a large corpus).")
     parser.add_argument("--output", type=Path, help="Optional JSON report path.")
     parser.add_argument("--strict", action="store_true", help="Exit code 2 when integrity/safety issues are present.")
     args = parser.parse_args()
