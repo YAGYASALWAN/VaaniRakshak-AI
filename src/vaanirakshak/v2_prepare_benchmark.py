@@ -11,6 +11,7 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+import re
 
 from vaanirakshak.baseline_download import save_json
 from vaanirakshak.v2_data_contract import AudioRecord, audit_manifest, write_jsonl
@@ -70,11 +71,20 @@ def _speaker_identity(dataset_name: str, notes: dict) -> str | None:
     return f"{dataset_name}:{str(value).strip()}"
 
 
+def _safe_filename(value: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
+    if not clean:
+        clean = "record"
+    if len(clean) > 120:
+        clean = clean[:96] + "-" + hashlib.blake2s(value.encode(), digest_size=8).hexdigest()
+    return clean
+
+
 def prepare_benchmark(
     output: Path,
     config: dict,
     *,
-    max_records: int | None = None,
+    max_per_label: int | None = None,
 ) -> Path:
     try:
         from datasets import Audio, load_dataset
@@ -87,8 +97,8 @@ def prepare_benchmark(
     missing = sorted(required - set(config))
     if missing:
         raise ValueError(f"Benchmark config missing fields: {missing}")
-    if max_records is not None and max_records < 2:
-        raise ValueError("max_records must be at least 2 or omitted for the full benchmark")
+    if max_per_label is not None and max_per_label < 1:
+        raise ValueError("max_per_label must be positive or omitted for the full benchmark")
 
     repository = str(config["repository"])
     revision = str(config["revision"])
@@ -101,59 +111,77 @@ def prepare_benchmark(
     audio_root = output / "audio" / dataset_name / "test"
     audio_root.mkdir(parents=True, exist_ok=True)
     records: list[AudioRecord] = []
-    source_receipts: list[dict] = []
     counts = Counter()
+    seen_record_ids: set[str] = set()
+    metadata_path = output / "source_metadata.jsonl"
+    metadata_tmp = metadata_path.with_suffix(".jsonl.tmp")
 
-    for row_number, row in enumerate(stream, 1):
-        if max_records is not None and len(records) >= max_records:
-            break
-        label = _label(row.get("label"))
-        notes = _notes(row.get("notes"))
-        path_value = str(row.get("path") or notes.get("utterance_id") or f"row-{row_number}")
-        record_key = notes.get("utterance_id") or Path(path_value).stem or f"row-{row_number}"
-        record_id = f"{dataset_name}:{record_key}"
-        raw = _audio_bytes(row.get("audio"))
-        digest = hashlib.sha256(raw).hexdigest()
+    with metadata_tmp.open("w", encoding="utf-8", newline="\n") as metadata_stream:
+        for row_number, row in enumerate(stream, 1):
+            label = _label(row.get("label"))
+            if max_per_label is not None and counts[label] >= max_per_label:
+                if all(counts[name] >= max_per_label for name in ("bonafide", "spoof")):
+                    break
+                continue
 
-        extension = Path(path_value).suffix.lower()
-        if extension != ".flac":
-            raise ValueError(f"Pinned benchmark unexpectedly contains non-FLAC audio: {path_value}")
-        relative = Path("audio") / dataset_name / "test" / f"{record_key}.flac"
-        target = output / relative
-        if target.exists():
-            if hashlib.sha256(target.read_bytes()).hexdigest() != digest:
-                raise ValueError(f"Existing benchmark audio differs for {record_id}")
-        else:
-            temporary = target.with_suffix(".flac.tmp")
-            temporary.write_bytes(raw)
-            temporary.replace(target)
+            notes = _notes(row.get("notes"))
+            path_value = str(row.get("path") or notes.get("utterance_id") or f"row-{row_number}")
+            record_key = str(notes.get("utterance_id") or Path(path_value).stem or f"row-{row_number}")
+            record_id = f"{dataset_name}:{record_key}"
+            if record_id in seen_record_ids:
+                raise ValueError(f"Duplicate benchmark record id: {record_id}")
+            seen_record_ids.add(record_id)
 
-        record = AudioRecord(
-            record_id=record_id,
-            label=label,  # type: ignore[arg-type]
-            dataset=dataset_name,
-            split="test",
-            audio_ref=relative.as_posix(),
-            language="en",
-            speaker_id=_speaker_identity(dataset_name, notes),
-            generator_id=_generator_id(dataset_name, label, notes),
-            source_utterance_id=_source_identity(dataset_name, notes),
-            content_sha256=digest,
-            codec=str(notes.get("codec") or "FLAC"),
-            sample_rate=16_000,
-        )
-        records.append(record)
-        source_receipts.append(
-            {
-                "record_id": record_id,
-                "source_path": path_value,
-                "notes": notes,
-                "sha256": digest,
-            }
-        )
-        counts[label] += 1
-        if row_number % 1000 == 0:
-            print(f"Materialized {len(records):,} {dataset_name} records", flush=True)
+            raw = _audio_bytes(row.get("audio"))
+            digest = hashlib.sha256(raw).hexdigest()
+            extension = Path(path_value).suffix.lower()
+            if extension != ".flac":
+                raise ValueError(f"Pinned benchmark unexpectedly contains non-FLAC audio: {path_value}")
+
+            filename = _safe_filename(record_key) + ".flac"
+            relative = Path("audio") / dataset_name / "test" / filename
+            target = output / relative
+            if target.exists():
+                if hashlib.sha256(target.read_bytes()).hexdigest() != digest:
+                    raise ValueError(f"Existing benchmark audio differs for {record_id}")
+            else:
+                temporary = target.with_suffix(".flac.tmp")
+                temporary.write_bytes(raw)
+                temporary.replace(target)
+
+            record = AudioRecord(
+                record_id=record_id,
+                label=label,  # type: ignore[arg-type]
+                dataset=dataset_name,
+                split="test",
+                audio_ref=relative.as_posix(),
+                language="en",
+                speaker_id=_speaker_identity(dataset_name, notes),
+                generator_id=_generator_id(dataset_name, label, notes),
+                source_utterance_id=_source_identity(dataset_name, notes),
+                content_sha256=digest,
+                codec=str(notes.get("codec") or "FLAC"),
+                sample_rate=16_000,
+            )
+            records.append(record)
+            metadata_stream.write(
+                json.dumps(
+                    {
+                        "record_id": record_id,
+                        "source_path": path_value,
+                        "notes": notes,
+                        "sha256": digest,
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            counts[label] += 1
+            if len(records) % 1000 == 0:
+                print(f"Materialized {len(records):,} {dataset_name} records", flush=True)
+            if max_per_label is not None and all(counts[name] >= max_per_label for name in ("bonafide", "spoof")):
+                break
+    metadata_tmp.replace(metadata_path)
 
     if not records:
         raise ValueError("Benchmark materialization produced no records")
@@ -175,13 +203,13 @@ def prepare_benchmark(
             "role": config.get("role"),
             "records": len(records),
             "counts": dict(counts),
-            "max_records": max_records,
+            "max_per_label": max_per_label,
             "sampling_notice": (
-                "FULL PINNED BENCHMARK" if max_records is None
-                else "PREFIX SMOKE SUBSET ONLY; do not report as full benchmark performance"
+                "FULL PINNED BENCHMARK" if max_per_label is None
+                else "BALANCED PREFIX SMOKE SUBSET ONLY; do not report as full benchmark performance"
             ),
             "audit_counts": audit.counts,
-            "source_receipts": source_receipts,
+            "source_metadata": metadata_path.name,
         },
     )
     return manifest
@@ -194,13 +222,13 @@ def main() -> None:
     parser.add_argument("--benchmark", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=Path("configs/v2_external_benchmarks.json"))
-    parser.add_argument("--max-records", type=int)
+    parser.add_argument("--max-per-label", type=int)
     args = parser.parse_args()
 
     configs = json.loads(args.config.read_text(encoding="utf-8"))
     if args.benchmark not in configs:
         raise SystemExit(f"Unknown benchmark {args.benchmark!r}; choices: {', '.join(sorted(configs))}")
-    manifest = prepare_benchmark(args.output, configs[args.benchmark], max_records=args.max_records)
+    manifest = prepare_benchmark(args.output, configs[args.benchmark], max_per_label=args.max_per_label)
     print(f"V2 benchmark manifest: {manifest}", flush=True)
 
 
