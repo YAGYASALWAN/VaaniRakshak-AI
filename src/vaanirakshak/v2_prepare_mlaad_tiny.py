@@ -25,7 +25,7 @@ from vaanirakshak.v2_manifest_tools import identity_components
 
 
 DATASET = "MLAAD-tiny"
-SCHEMA = "vaanirakshak-v2-mlaad-tiny-v1"
+SCHEMA = "vaanirakshak-v2-mlaad-tiny-v2"
 
 
 def _sha256(path: Path) -> str:
@@ -49,6 +49,23 @@ def _clean_relative(value: str) -> str:
     return path.as_posix()
 
 
+def _normalize_original_reference(value: str) -> str:
+    """Return the canonical path *under* ``original/en`` used by MLAAD metadata.
+
+    MLAAD-tiny ``meta.csv`` stores ``original_file`` as e.g.
+    ``en_US/by_book/.../clip.wav`` while an on-disk path relative to the dataset
+    root is ``original/en/en_US/by_book/.../clip.wav``. Accept either spelling and
+    normalize both to the metadata form so genuine/fake source identities match.
+    """
+    relative = _clean_relative(value)
+    prefix = "original/en/"
+    if relative.startswith(prefix):
+        relative = relative[len(prefix):]
+    if not relative:
+        raise ValueError(f"Empty MLAAD original-file reference: {value!r}")
+    return _clean_relative(relative)
+
+
 def _resolve_under(root: Path, relative: str) -> Path:
     root = root.resolve()
     path = (root / Path(relative)).resolve()
@@ -60,7 +77,7 @@ def _resolve_under(root: Path, relative: str) -> Path:
 
 
 def _source_id(relative_original: str) -> str:
-    return f"MLAAD-tiny:{_clean_relative(relative_original)}"
+    return f"MLAAD-tiny:{_normalize_original_reference(relative_original)}"
 
 
 def _record_id(label: str, relative: str) -> str:
@@ -75,7 +92,6 @@ def _manifest_audio_ref(audio_path: Path, output_root: Path) -> str:
 def _generator(row: dict, meta_path: Path) -> str:
     value = str(row.get("model_name") or "").strip()
     if not value:
-        # meta.csv lives directly under fake/en/<generator>/ in MLAAD-tiny.
         value = meta_path.parent.name.strip()
     if not value:
         raise ValueError(f"Spoof row in {meta_path} has no generator identity")
@@ -164,15 +180,22 @@ def prepare(
     if not fake_files or not meta_files:
         raise ValueError("MLAAD-tiny contains no English spoof WAV/metadata files")
 
+    print(
+        f"MLAAD-tiny scan: bona-fide={len(originals)}, spoof={len(fake_files)}, metadata_files={len(meta_files)}",
+        flush=True,
+    )
+
     records: list[AudioRecord] = []
-    known_originals: set[str] = set()
-    for path in originals:
-        relative = path.relative_to(source_root).as_posix()
-        relative = _clean_relative(relative)
-        known_originals.add(relative)
+    known_originals: dict[str, Path] = {}
+    for ordinal, path in enumerate(originals, 1):
+        dataset_relative = _clean_relative(path.relative_to(source_root).as_posix())
+        source_key = _normalize_original_reference(path.relative_to(original_root).as_posix())
+        if source_key in known_originals:
+            raise ValueError(f"Duplicate MLAAD original identity: {source_key}")
+        known_originals[source_key] = path
         records.append(
             AudioRecord(
-                record_id=_record_id("bonafide", relative),
+                record_id=_record_id("bonafide", dataset_relative),
                 label="bonafide",
                 dataset=DATASET,
                 split="train",
@@ -180,16 +203,19 @@ def prepare(
                 language="en",
                 speaker_id=None,
                 generator_id=None,
-                source_utterance_id=_source_id(relative),
+                source_utterance_id=_source_id(source_key),
                 content_sha256=_sha256(path),
                 codec="WAV",
                 sample_rate=None,
             )
         )
+        if ordinal % 1000 == 0 or ordinal == len(originals):
+            print(f"Hashed bona-fide audio {ordinal}/{len(originals)}", flush=True)
 
     metadata_audio: set[Path] = set()
     metadata_rows = 0
-    for meta_path in meta_files:
+    spoof_hashed = 0
+    for meta_ordinal, meta_path in enumerate(meta_files, 1):
         with meta_path.open("r", encoding="utf-8-sig", newline="") as stream:
             reader = csv.DictReader(stream, delimiter="|")
             required = {"path", "original_file", "language", "model_name", "reference_speaker"}
@@ -200,13 +226,13 @@ def prepare(
                 if str(row.get("language") or "").strip().lower() != "en":
                     raise ValueError(f"Non-English row found under MLAAD-tiny fake/en: {meta_path}")
                 fake_relative = _clean_relative(row["path"])
-                original_relative = _clean_relative(row["original_file"])
+                original_key = _normalize_original_reference(row["original_file"])
                 fake_path = _resolve_under(source_root, fake_relative)
                 if not fake_path.is_file():
                     raise FileNotFoundError(f"MLAAD spoof file referenced by metadata is missing: {fake_path}")
-                if original_relative not in known_originals:
+                if original_key not in known_originals:
                     raise ValueError(
-                        f"MLAAD spoof row references an original not present in original/en: {original_relative}"
+                        f"MLAAD spoof row references an original not present in original/en: {original_key}"
                     )
                 if fake_path in metadata_audio:
                     raise ValueError(f"MLAAD spoof audio appears more than once in metadata: {fake_relative}")
@@ -222,12 +248,17 @@ def prepare(
                         language="en",
                         speaker_id=_speaker(row),
                         generator_id=generator,
-                        source_utterance_id=_source_id(original_relative),
+                        source_utterance_id=_source_id(original_key),
                         content_sha256=_sha256(fake_path),
                         codec="WAV",
                         sample_rate=None,
                     )
                 )
+                spoof_hashed += 1
+                if spoof_hashed % 1000 == 0 or spoof_hashed == len(fake_files):
+                    print(f"Hashed spoof audio {spoof_hashed}/{len(fake_files)}", flush=True)
+        if meta_ordinal % 10 == 0 or meta_ordinal == len(meta_files):
+            print(f"Read spoof metadata {meta_ordinal}/{len(meta_files)} files", flush=True)
 
     discovered_fake = {path.resolve() for path in fake_files}
     if metadata_audio != discovered_fake:
@@ -263,13 +294,20 @@ def prepare(
         "counts": audit.counts,
         "warnings": list(audit.warnings),
         "split_policy": "identity components sharing known source utterance or reference speaker stay in one split",
-        "source_utterance_policy": "fake original_file links generated speech to the corresponding original/en WAV",
+        "source_utterance_policy": "fake original_file is normalized relative to original/en and links generated speech to the matching genuine WAV",
         "generator_policy": "model_name with generator-directory fallback",
         "audio_storage": "existing MLAAD-tiny WAV files are referenced in place; no duplicate audio copy is created",
         "license_note": "Respect MLAAD-tiny upstream license and non-commercial restrictions for the SIH prototype.",
     }
     (output_root / "mlaad_tiny_audit.json").write_text(
         json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    print(
+        "Prepared MLAAD-tiny: "
+        f"train={audit.counts['by_split']['train']}, "
+        f"dev={audit.counts['by_split']['dev']}, "
+        f"test={audit.counts['by_split']['test']}",
+        flush=True,
     )
     return manifest_path
 
