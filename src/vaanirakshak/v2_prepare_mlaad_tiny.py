@@ -5,10 +5,12 @@ large files. It verifies the English bona-fide and spoof trees, reads every spoo
 ``meta.csv``, hashes the audio, derives generator/source provenance, then creates a
 deterministic leakage-safe train/dev/test manifest.
 
-The important leakage rule is that records sharing a known source utterance or
-reference-speaker identity are kept in the same split. This prevents a genuine
-source utterance from appearing in train while a generated version of the same
-utterance appears in dev/test.
+Important: MLAAD-tiny is a sampled subset. A spoof row's ``original_file`` may refer
+to an M-AILABS source utterance whose genuine WAV is not included in tiny's sampled
+``original/en`` tree. That is valid provenance, not an error. We still use the
+reference as a source-utterance identity so related generated variants stay in the
+same split; when the corresponding genuine WAV is present, it naturally joins the
+same identity component as well.
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ from vaanirakshak.v2_manifest_tools import identity_components
 
 
 DATASET = "MLAAD-tiny"
-SCHEMA = "vaanirakshak-v2-mlaad-tiny-v2"
+SCHEMA = "vaanirakshak-v2-mlaad-tiny-v3"
 
 
 def _sha256(path: Path) -> str:
@@ -50,12 +52,12 @@ def _clean_relative(value: str) -> str:
 
 
 def _normalize_original_reference(value: str) -> str:
-    """Return the canonical path *under* ``original/en`` used by MLAAD metadata.
+    """Return the canonical path under ``original/en`` used for source identity.
 
-    MLAAD-tiny ``meta.csv`` stores ``original_file`` as e.g.
-    ``en_US/by_book/.../clip.wav`` while an on-disk path relative to the dataset
-    root is ``original/en/en_US/by_book/.../clip.wav``. Accept either spelling and
-    normalize both to the metadata form so genuine/fake source identities match.
+    MLAAD metadata commonly stores ``original_file`` as ``en_US/by_book/...`` while
+    a dataset-root-relative path is ``original/en/en_US/by_book/...``. Both forms
+    normalize to the metadata spelling. The referred genuine WAV need not be part of
+    MLAAD-tiny's sampled bona-fide subset.
     """
     relative = _clean_relative(value)
     prefix = "original/en/"
@@ -215,6 +217,9 @@ def prepare(
     metadata_audio: set[Path] = set()
     metadata_rows = 0
     spoof_hashed = 0
+    spoof_with_local_original = 0
+    spoof_without_local_original = 0
+
     for meta_ordinal, meta_path in enumerate(meta_files, 1):
         with meta_path.open("r", encoding="utf-8-sig", newline="") as stream:
             reader = csv.DictReader(stream, delimiter="|")
@@ -225,19 +230,24 @@ def prepare(
                 metadata_rows += 1
                 if str(row.get("language") or "").strip().lower() != "en":
                     raise ValueError(f"Non-English row found under MLAAD-tiny fake/en: {meta_path}")
+
                 fake_relative = _clean_relative(row["path"])
                 original_key = _normalize_original_reference(row["original_file"])
                 fake_path = _resolve_under(source_root, fake_relative)
                 if not fake_path.is_file():
                     raise FileNotFoundError(f"MLAAD spoof file referenced by metadata is missing: {fake_path}")
-                if original_key not in known_originals:
-                    raise ValueError(
-                        f"MLAAD spoof row references an original not present in original/en: {original_key}"
-                    )
                 if fake_path in metadata_audio:
                     raise ValueError(f"MLAAD spoof audio appears more than once in metadata: {fake_relative}")
                 metadata_audio.add(fake_path)
-                generator = _generator(row, meta_path)
+
+                if original_key in known_originals:
+                    spoof_with_local_original += 1
+                else:
+                    # MLAAD-tiny samples bona-fide and spoof material separately.
+                    # Keep the upstream original_file identity even when its genuine
+                    # counterpart is not included in this tiny clone.
+                    spoof_without_local_original += 1
+
                 records.append(
                     AudioRecord(
                         record_id=_record_id("spoof", fake_relative),
@@ -247,7 +257,7 @@ def prepare(
                         audio_ref=_manifest_audio_ref(fake_path, output_root),
                         language="en",
                         speaker_id=_speaker(row),
-                        generator_id=generator,
+                        generator_id=_generator(row, meta_path),
                         source_utterance_id=_source_id(original_key),
                         content_sha256=_sha256(fake_path),
                         codec="WAV",
@@ -288,13 +298,18 @@ def prepare(
         "spoof_wav_files": len(fake_files),
         "metadata_files": len(meta_files),
         "metadata_rows": metadata_rows,
+        "spoof_rows_with_local_original": spoof_with_local_original,
+        "spoof_rows_without_local_original": spoof_without_local_original,
         "seed": seed,
         "dev_fraction": dev_fraction,
         "test_fraction": test_fraction,
         "counts": audit.counts,
         "warnings": list(audit.warnings),
         "split_policy": "identity components sharing known source utterance or reference speaker stay in one split",
-        "source_utterance_policy": "fake original_file is normalized relative to original/en and links generated speech to the matching genuine WAV",
+        "source_utterance_policy": (
+            "fake original_file is retained as source identity even when MLAAD-tiny does not include the corresponding "
+            "sampled genuine WAV; when present, genuine and generated variants are joined automatically"
+        ),
         "generator_policy": "model_name with generator-directory fallback",
         "audio_storage": "existing MLAAD-tiny WAV files are referenced in place; no duplicate audio copy is created",
         "license_note": "Respect MLAAD-tiny upstream license and non-commercial restrictions for the SIH prototype.",
@@ -306,7 +321,9 @@ def prepare(
         "Prepared MLAAD-tiny: "
         f"train={audit.counts['by_split']['train']}, "
         f"dev={audit.counts['by_split']['dev']}, "
-        f"test={audit.counts['by_split']['test']}",
+        f"test={audit.counts['by_split']['test']}, "
+        f"spoof_sources_present={spoof_with_local_original}, "
+        f"spoof_sources_absent={spoof_without_local_original}",
         flush=True,
     )
     return manifest_path
