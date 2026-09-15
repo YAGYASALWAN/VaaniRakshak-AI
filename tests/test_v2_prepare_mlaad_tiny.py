@@ -7,6 +7,7 @@ from vaanirakshak.v2_prepare_mlaad_tiny import (
     _clean_relative,
     _component_bucket,
     _generator,
+    _normalize_original_reference,
     _source_id,
     _speaker,
     split_records,
@@ -17,8 +18,20 @@ class MLAADTinyPreparationTests(unittest.TestCase):
     def test_metadata_provenance_helpers(self):
         self.assertEqual(_clean_relative("./original/en/en_sample_000477.wav"), "original/en/en_sample_000477.wav")
         self.assertEqual(
-            _source_id("./original/en/en_sample_000477.wav"),
-            "MLAAD-tiny:original/en/en_sample_000477.wav",
+            _normalize_original_reference("./original/en/en_US/by_book/sample.wav"),
+            "en_US/by_book/sample.wav",
+        )
+        self.assertEqual(
+            _normalize_original_reference("en_US/by_book/sample.wav"),
+            "en_US/by_book/sample.wav",
+        )
+        self.assertEqual(
+            _source_id("./original/en/en_US/by_book/sample.wav"),
+            "MLAAD-tiny:en_US/by_book/sample.wav",
+        )
+        self.assertEqual(
+            _source_id("en_US/by_book/sample.wav"),
+            "MLAAD-tiny:en_US/by_book/sample.wav",
         )
         with tempfile.TemporaryDirectory() as folder:
             meta = Path(folder) / "Cartesia.ai (Sonic-3)" / "meta.csv"
@@ -30,10 +43,8 @@ class MLAADTinyPreparationTests(unittest.TestCase):
 
     def test_split_keeps_source_pairs_together_and_all_labels_present(self):
         records = []
-        # Create enough independent source components that the deterministic hash
-        # assignment exercises train/dev/test while each component contains both labels.
         for index in range(500):
-            source = f"MLAAD-tiny:original/en/sample-{index}.wav"
+            source = f"MLAAD-tiny:en_US/sample-{index}.wav"
             records.extend(
                 [
                     AudioRecord(
