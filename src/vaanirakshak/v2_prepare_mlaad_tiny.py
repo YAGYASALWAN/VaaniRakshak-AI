@@ -11,6 +11,11 @@ to an M-AILABS source utterance whose genuine WAV is not included in tiny's samp
 reference as a source-utterance identity so related generated variants stay in the
 same split; when the corresponding genuine WAV is present, it naturally joins the
 same identity component as well.
+
+MLAAD generator folders may expose slightly different metadata columns. Only
+``path``, ``original_file`` and ``language`` are mandatory here. ``model_name`` is
+optional because the generator directory is a reliable fallback, and
+``reference_speaker`` is optional provenance rather than a dataset requirement.
 """
 from __future__ import annotations
 
@@ -27,7 +32,7 @@ from vaanirakshak.v2_manifest_tools import identity_components
 
 
 DATASET = "MLAAD-tiny"
-SCHEMA = "vaanirakshak-v2-mlaad-tiny-v3"
+SCHEMA = "vaanirakshak-v2-mlaad-tiny-v4"
 
 
 def _sha256(path: Path) -> str:
@@ -52,13 +57,7 @@ def _clean_relative(value: str) -> str:
 
 
 def _normalize_original_reference(value: str) -> str:
-    """Return the canonical path under ``original/en`` used for source identity.
-
-    MLAAD metadata commonly stores ``original_file`` as ``en_US/by_book/...`` while
-    a dataset-root-relative path is ``original/en/en_US/by_book/...``. Both forms
-    normalize to the metadata spelling. The referred genuine WAV need not be part of
-    MLAAD-tiny's sampled bona-fide subset.
-    """
+    """Return the canonical path under ``original/en`` used for source identity."""
     relative = _clean_relative(value)
     prefix = "original/en/"
     if relative.startswith(prefix):
@@ -105,6 +104,17 @@ def _speaker(row: dict) -> str | None:
     if not value or value.lower() in {"none", "null", "unknown", "nan"}:
         return None
     return f"MLAAD:reference:{value}"
+
+
+def _validate_metadata_schema(fieldnames: list[str] | None, meta_path: Path) -> set[str]:
+    if fieldnames is None:
+        raise ValueError(f"MLAAD metadata has no header: {meta_path}")
+    fields = {str(value).strip() for value in fieldnames if str(value).strip()}
+    required = {"path", "original_file", "language"}
+    missing = sorted(required - fields)
+    if missing:
+        raise ValueError(f"MLAAD metadata in {meta_path} is missing required columns: {missing}; fields={sorted(fields)}")
+    return fields
 
 
 def _component_bucket(group: list[AudioRecord], seed: int) -> int:
@@ -219,13 +229,24 @@ def prepare(
     spoof_hashed = 0
     spoof_with_local_original = 0
     spoof_without_local_original = 0
+    metadata_with_reference_speaker = 0
+    metadata_without_reference_speaker = 0
+    metadata_with_model_name = 0
+    metadata_without_model_name = 0
 
     for meta_ordinal, meta_path in enumerate(meta_files, 1):
         with meta_path.open("r", encoding="utf-8-sig", newline="") as stream:
             reader = csv.DictReader(stream, delimiter="|")
-            required = {"path", "original_file", "language", "model_name", "reference_speaker"}
-            if reader.fieldnames is None or not required.issubset(set(reader.fieldnames)):
-                raise ValueError(f"Unexpected MLAAD metadata schema in {meta_path}: {reader.fieldnames}")
+            fields = _validate_metadata_schema(reader.fieldnames, meta_path)
+            if "reference_speaker" in fields:
+                metadata_with_reference_speaker += 1
+            else:
+                metadata_without_reference_speaker += 1
+            if "model_name" in fields:
+                metadata_with_model_name += 1
+            else:
+                metadata_without_model_name += 1
+
             for row in reader:
                 metadata_rows += 1
                 if str(row.get("language") or "").strip().lower() != "en":
@@ -243,9 +264,6 @@ def prepare(
                 if original_key in known_originals:
                     spoof_with_local_original += 1
                 else:
-                    # MLAAD-tiny samples bona-fide and spoof material separately.
-                    # Keep the upstream original_file identity even when its genuine
-                    # counterpart is not included in this tiny clone.
                     spoof_without_local_original += 1
 
                 records.append(
@@ -298,6 +316,10 @@ def prepare(
         "spoof_wav_files": len(fake_files),
         "metadata_files": len(meta_files),
         "metadata_rows": metadata_rows,
+        "metadata_files_with_reference_speaker": metadata_with_reference_speaker,
+        "metadata_files_without_reference_speaker": metadata_without_reference_speaker,
+        "metadata_files_with_model_name": metadata_with_model_name,
+        "metadata_files_without_model_name": metadata_without_model_name,
         "spoof_rows_with_local_original": spoof_with_local_original,
         "spoof_rows_without_local_original": spoof_without_local_original,
         "seed": seed,
@@ -305,12 +327,13 @@ def prepare(
         "test_fraction": test_fraction,
         "counts": audit.counts,
         "warnings": list(audit.warnings),
-        "split_policy": "identity components sharing known source utterance or reference speaker stay in one split",
+        "split_policy": "identity components sharing known source utterance or available reference speaker stay in one split",
         "source_utterance_policy": (
             "fake original_file is retained as source identity even when MLAAD-tiny does not include the corresponding "
             "sampled genuine WAV; when present, genuine and generated variants are joined automatically"
         ),
-        "generator_policy": "model_name with generator-directory fallback",
+        "generator_policy": "model_name when available, otherwise generator-directory fallback",
+        "speaker_policy": "reference_speaker is used when supplied by that generator metadata; absence is not invented",
         "audio_storage": "existing MLAAD-tiny WAV files are referenced in place; no duplicate audio copy is created",
         "license_note": "Respect MLAAD-tiny upstream license and non-commercial restrictions for the SIH prototype.",
     }
