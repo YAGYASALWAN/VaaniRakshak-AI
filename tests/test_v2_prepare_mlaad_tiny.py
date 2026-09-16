@@ -10,6 +10,7 @@ from vaanirakshak.v2_prepare_mlaad_tiny import (
     _normalize_original_reference,
     _source_id,
     _speaker,
+    _validate_metadata_schema,
     split_records,
 )
 
@@ -40,6 +41,30 @@ class MLAADTinyPreparationTests(unittest.TestCase):
             self.assertEqual(_generator(row, meta), "MLAAD:Cartesia.ai (Sonic-3)")
             self.assertEqual(_speaker(row), "MLAAD:reference:speaker-1")
             self.assertIsNone(_speaker({"reference_speaker": "unknown"}))
+            self.assertIsNone(_speaker({}))
+            self.assertEqual(_generator({}, meta), "MLAAD:Cartesia.ai (Sonic-3)")
+
+    def test_generator_specific_metadata_schema_can_omit_optional_fields(self):
+        with tempfile.TemporaryDirectory() as folder:
+            meta = Path(folder) / "Chatterbox" / "meta.csv"
+            fields = _validate_metadata_schema(
+                [
+                    "path",
+                    "original_file",
+                    "language",
+                    "is_original_language",
+                    "duration",
+                    "training_data",
+                    "model_name",
+                    "architecture",
+                    "transcript",
+                ],
+                meta,
+            )
+            self.assertIn("path", fields)
+            self.assertNotIn("reference_speaker", fields)
+            with self.assertRaisesRegex(ValueError, "missing required columns"):
+                _validate_metadata_schema(["path", "language"], meta)
 
     def test_split_keeps_source_pairs_together_and_all_labels_present(self):
         records = []
