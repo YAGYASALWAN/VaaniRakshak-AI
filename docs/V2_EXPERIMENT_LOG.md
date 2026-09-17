@@ -138,7 +138,50 @@ Later experiments will additionally evaluate:
 
 - Dataset preparation: COMPLETE
 - Leakage-aware manifest: COMPLETE
-- WavLM backbone download: IN PROGRESS / COMPLETE ON FIRST RUN
-- First real V2 training run: STARTING
+- WavLM backbone download: COMPLETE
+- First real V2 training run: EPOCH 1 COMPLETE
 
-No V2 accuracy or generalization claims are being made until frozen-checkpoint evaluation is complete.
+## 2026-09-17 — First Frozen Test-Set Result
+
+The first WavLM run completed one head-only epoch successfully. Full-backbone fine-tuning after epoch 1 was stopped because the local training configuration became impractically slow for the SIH deadline.
+
+Development result after epoch 1:
+
+- Dev EER: 0.1180
+- Dev F1: 0.8729
+
+The resulting `best.pt` checkpoint was then evaluated on the untouched MLAAD-tiny test split using the frozen development-selected operating threshold.
+
+Observed test metrics:
+
+- ROC-AUC: 0.9672121645
+- PR-AUC: 0.9747207889
+- Precision: 0.9868173258
+- Recall: 0.7751479290
+- Threshold: 0.6203081608
+- True positives: 524
+- True negatives: 631
+
+Interpretation:
+
+- The first frozen V2 baseline separates bona-fide and spoof audio strongly by ranking metrics.
+- Spoof precision is very high, so positive spoof predictions are rarely false alarms at the selected threshold.
+- Recall remains the main weakness: the detector still misses a meaningful fraction of spoof examples.
+- These are MLAAD-tiny held-out test results only and must not be presented as universal real-world performance.
+
+Baseline name:
+
+`V2-MLAAD-WavLM-HeadOnly-Baseline`
+
+The checkpoint from this run is retained as the comparison baseline for all subsequent optimization work.
+
+### Next engineering objective
+
+Do not resume the original full-backbone run unchanged. The next training iteration should prioritize SIH turnaround time and observability:
+
+- batch-level progress and ETA logging;
+- multiple data-loader workers / prefetch where stable on Windows;
+- frozen-backbone fast mode;
+- optional selective unfreezing of only the upper WavLM layers;
+- preserve this baseline for direct metric comparison;
+- integrate the current baseline into the live VaaniRakshak inference/product path while model improvements run in parallel.
