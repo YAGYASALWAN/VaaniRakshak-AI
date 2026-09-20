@@ -1,0 +1,164 @@
+version: 2
+project: VaaniRakshak-V2
+purpose: >-
+  Prevent V2 from reporting only an easy in-domain score. Every candidate detector
+  must be evaluated under multiple data-separation scenarios before it can replace
+  the mock/legacy integration detector in the live product.
+
+labels:
+  bonafide: genuine human speech
+  spoof: synthetic, cloned, converted, or otherwise generated speech
+
+manifest_required_fields:
+  - record_id
+  - label
+  - dataset
+  - split
+  - audio_ref
+  - content_sha256
+
+spoof_required_fields:
+  - generator_id
+
+recommended_metadata:
+  - speaker_id
+  - source_utterance_id
+  - language
+  - codec
+  - sample_rate
+
+scenarios:
+  in_domain:
+    description: Train/dev/test within the pinned SEA-Spoof corpus after V2 leakage audit.
+    required: true
+    metrics:
+      - roc_auc
+      - pr_auc
+      - eer
+      - f1
+      - precision
+      - recall
+      - false_positive_rate
+      - false_negative_rate
+
+  unseen_generator:
+    description: >-
+      Derive a separate SEA-Spoof scenario where no spoof generator identity used in
+      test appears in train/dev. Records related by known speaker or source utterance
+      identity may not cross splits. Conflicting spoof variants are dropped rather
+      than leaked across the generator boundary.
+    required: true
+    hard_constraints:
+      generator_disjoint: true
+      source_utterance_disjoint: true
+      speaker_disjoint_when_known: true
+      content_hash_disjoint: true
+
+  cross_dataset_telephony:
+    description: >-
+      Evaluate the frozen SEA-trained checkpoint on pinned ASVspoof 2021 LA test
+      data using the saved development threshold unchanged. This provides a
+      cross-dataset test with telephony codec/transmission conditions.
+    required: true
+    dataset: ASVspoof2021_LA
+    hard_constraints:
+      evaluation_dataset_absent_from_train_dev: true
+      threshold_frozen: true
+      no_test_tuning: true
+
+  cross_dataset_modern:
+    description: >-
+      Evaluate the same frozen checkpoint on the pinned ASVspoof 5 Track 1 test
+      package. Smoke subsets are engineering-only; release metrics require the full
+      configured benchmark.
+    required: true
+    dataset: ASVspoof5
+    hard_constraints:
+      evaluation_dataset_absent_from_train_dev: true
+      threshold_frozen: true
+      no_test_tuning: true
+      full_benchmark_required_for_reportable_metric: true
+
+  synthetic_telephony_robustness:
+    description: >-
+      Independently transform a frozen evaluation population through telephone-like
+      channels. This supplements rather than replaces the real ASVspoof 2021 LA
+      cross-dataset telephony test.
+    required: true
+    transformations:
+      - narrowband_8khz
+      - g711_mulaw
+      - g711_alaw
+      - low_bitrate_compression
+
+  noise_robustness:
+    description: >-
+      Re-evaluate a frozen test population under realistic background noise and SNR bands.
+    required: true
+    snr_db:
+      - 20
+      - 10
+      - 5
+
+  duration_robustness:
+    description: Test the same frozen evaluation population at shorter speech durations.
+    required: true
+    durations_seconds:
+      - 2
+      - 4
+      - 8
+
+candidate_data_roles:
+  SEA-Spoof:
+    role: primary_v2_train_dev_and_in_domain_test
+    note: >-
+      English subset is materialized under the existing bounded-transfer workflow.
+      Audio is stored as canonical mono 16 kHz FLAC. Use is subject to the dataset's
+      approved non-commercial academic research terms.
+
+  ASVspoof2021_LA:
+    role: frozen_cross_dataset_telephony_test
+    note: Evaluation-only for the first V2 model. Do not use to tune threshold or hyperparameters.
+
+  ASVspoof5:
+    role: frozen_modern_cross_dataset_test
+    note: Evaluation-only for the first V2 model. Full test required for reportable release metrics.
+
+  MLAAD:
+    role: later_generator_diversity_ablation
+    note: >-
+      The existing repository preserves links from MLAAD synthetic clips to original
+      M-AILABS utterances. Any later augmentation must keep paired provenance and
+      must not turn dataset origin into the label shortcut. Subject to its license.
+
+  ASVspoof2019_LA:
+    role: optional_regression_reference
+    note: Useful for comparison with prior anti-spoof work, but not the primary V2 training corpus.
+
+release_gate:
+  product_detector_requires:
+    - checkpoint_schema_is_v2
+    - threshold_selected_on_dev_only
+    - no_test_threshold_tuning
+    - in_domain_report
+    - unseen_generator_report
+    - asvspoof2021_la_cross_dataset_report
+    - asvspoof5_cross_dataset_report
+    - telephony_robustness_report
+    - duration_robustness_report
+    - noise_robustness_report
+    - false_positive_analysis
+
+  forbidden_claims_without_calibration:
+    - probability_of_being_fake
+    - probability_of_authenticity
+
+  forbidden_practices:
+    - mix_train_and_test_generators_in_unseen_generator_scenario
+    - share_known_speakers_or_source_utterances_across_splits
+    - use_test_set_to_choose_threshold
+    - use_external_benchmark_results_to_iteratively_tune_the_same_release_candidate
+    - report_only_accuracy
+    - silently_substitute_an_older_checkpoint
+    - treat_synthetic_only_corpus_as_balanced_binary_dataset
+    - report_smoke_subset_as_full_benchmark

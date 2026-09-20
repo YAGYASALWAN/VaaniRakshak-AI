@@ -16,26 +16,119 @@ NOTICE = ("English-only SEA-Spoof subset experiment. Original train/validation/e
 
 
 def select_groups(candidates, budget=26_500_000_000):
-    """Allocate budget to every original split; favor English yield and class coverage."""
+    """Select a usable English subset without assuming Parquet row groups fit fixed split quotas.
+
+    SEA Parquet row groups are indivisible transfer units. A validation/evaluation row
+    group can therefore be larger than a nominal 10% split allocation even when the
+    complete train/dev/test selection comfortably fits the global budget. Reserve the
+    minimum class coverage for every official split first, then spend the remainder
+    toward the 80/10/10 target and finally use any otherwise stranded global budget.
+    """
+    splits = (("train", .8), ("validation", .1), ("evaluation", .1))
+    labels = ("bonafide", "spoof")
+    budget = int(budget)
+    if budget <= 0:
+        raise ValueError("SEA selection budget must be positive")
+
+    pools = {
+        split: [x for x in candidates if x["split"] == split and x.get("english_rows", 0)]
+        for split, _ in splits
+    }
+    counts = {split: Counter() for split, _ in splits}
+    split_bytes = Counter()
     selected = []
-    for split, fraction in (("train", .8), ("validation", .1), ("evaluation", .1)):
-        remaining = int(budget * fraction)
-        pool = [x for x in candidates if x["split"] == split and x["english_rows"]]
-        counts = Counter()
-        while pool:
-            eligible = [x for x in pool if x["estimated_bytes"] <= remaining]
+    spent = 0
+
+    def size(group):
+        value = int(group["estimated_bytes"])
+        if value <= 0:
+            raise ValueError("SEA candidate has a non-positive estimated size")
+        return value
+
+    def add(split, group):
+        nonlocal spent
+        selected.append(group)
+        pools[split].remove(group)
+        counts[split].update(group.get("labels", {}))
+        amount = size(group)
+        split_bytes[split] += amount
+        spent += amount
+
+    def minimum_priority(split, group):
+        deficit = {label: max(0, 100 - counts[split][label]) for label in labels}
+        marginal = sum(min(int(group.get("labels", {}).get(label, 0)), deficit[label]) for label in labels)
+        amount = size(group)
+        english_rows = int(group.get("english_rows", 0))
+        return (marginal / amount, marginal, english_rows / amount, english_rows, str(group["unit"]))
+
+    def fill_priority(split, group):
+        amount = size(group)
+        coverage = sum(
+            int(group.get("labels", {}).get(label, 0)) / (counts[split][label] + 100)
+            for label in labels
+        )
+        english_rows = int(group.get("english_rows", 0))
+        return (coverage / amount, english_rows / amount, english_rows, str(group["unit"]))
+
+    for split, _ in splits:
+        if not pools[split]:
+            raise ValueError(f"No English SEA candidates are available for {split}")
+        while any(counts[split][label] < 100 for label in labels):
+            remaining = budget - spent
+            eligible = []
+            for group in pools[split]:
+                if size(group) > remaining:
+                    continue
+                deficits = {label: max(0, 100 - counts[split][label]) for label in labels}
+                marginal = sum(
+                    min(int(group.get("labels", {}).get(label, 0)), deficits[label])
+                    for label in labels
+                )
+                if marginal > 0:
+                    eligible.append(group)
+            if not eligible:
+                raise ValueError(
+                    f"Cannot form a usable English {split} subset within the global byte budget; "
+                    f"coverage so far is bonafide={counts[split]['bonafide']}, spoof={counts[split]['spoof']}"
+                )
+            add(split, max(eligible, key=lambda group: minimum_priority(split, group)))
+
+    for split, fraction in splits:
+        target = int(budget * fraction)
+        while pools[split] and spent < budget:
+            allowance = min(budget - spent, max(0, target - split_bytes[split]))
+            if allowance <= 0:
+                break
+            eligible = [group for group in pools[split] if size(group) <= allowance]
             if not eligible:
                 break
-            def priority(x):
-                coverage = sum(x["labels"].get(k, 0) / (counts[k] + 100) for k in ("bonafide", "spoof"))
-                return (coverage / max(1, x["estimated_bytes"]), x["unit"])
-            chosen = max(eligible, key=priority)
-            selected.append(chosen)
-            counts.update(chosen["labels"])
-            remaining -= chosen["estimated_bytes"]
-            pool.remove(chosen)
-        if any(counts[k] < 100 for k in ("bonafide", "spoof")):
-            raise ValueError(f"Cannot form a usable English {split} subset within its byte allocation")
+            add(split, max(eligible, key=lambda group: fill_priority(split, group)))
+
+    split_fractions = dict(splits)
+    while spent < budget:
+        remaining = budget - spent
+        eligible = [
+            (split, group)
+            for split, _ in splits
+            for group in pools[split]
+            if size(group) <= remaining
+        ]
+        if not eligible:
+            break
+
+        def global_priority(item):
+            split, group = item
+            amount = size(group)
+            english_rows = int(group.get("english_rows", 0))
+            target = int(budget * split_fractions[split])
+            under_target = max(0, target - split_bytes[split])
+            return (under_target > 0, english_rows / amount, english_rows, str(group["unit"]))
+
+        split, group = max(eligible, key=global_priority)
+        add(split, group)
+
+    if spent > budget:
+        raise AssertionError("SEA group selection exceeded the global budget")
     return selected
 
 

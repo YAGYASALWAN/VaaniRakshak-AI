@@ -1,0 +1,4 @@
+# VaaniRakshak V2 SSL training dependencies
+# Install the project first: python -m pip install -e .
+-r requirements-v2.txt
+transformers>=4.48,<5

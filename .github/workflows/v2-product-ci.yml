@@ -1,0 +1,84 @@
+name: V2 Product CI
+
+on:
+  push:
+    branches: [v2-product-skeleton]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: v2-product-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-v2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-v2.txt
+            requirements-v2-train.txt
+            requirements-v2-data.txt
+      - name: Install project and V2 dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install -r requirements-v2-train.txt
+          python -m pip install -r requirements-v2-data.txt
+          python -m pip install pytest
+      - name: Run V2 tests
+        run: >-
+          python -m pytest
+          tests/test_v2_audio.py
+          tests/test_v2_engine.py
+          tests/test_v2_server.py
+          tests/test_v2_detectors.py
+          tests/test_v2_data_contract.py
+          tests/test_v2_data_contract_speakers.py
+          tests/test_v2_metrics.py
+          tests/test_v2_calibration.py
+          tests/test_v2_calibrate_command.py
+          tests/test_v2_evaluate_report.py
+          tests/test_v2_ssl_model.py
+          tests/test_v2_training_state.py
+          tests/test_v2_training_smoke.py
+          tests/test_v2_preflight.py
+          tests/test_v2_prepare_sea.py
+          tests/test_v2_prepare_sea_end_to_end.py
+          tests/test_v2_sea_retry_cache.py
+          tests/test_v2_data_status.py
+          tests/test_v2_prepare_benchmark.py
+          tests/test_v2_manifest_tools.py
+          tests/test_v2_robustness.py
+          tests/test_v2_frontend_contract.py
+          -q
+      - name: Compile V2 Python modules and CLIs
+        run: >-
+          python -m py_compile
+          src/vaanirakshak/sea_transfer.py
+          src/vaanirakshak/v2_audio.py
+          src/vaanirakshak/v2_engine.py
+          src/vaanirakshak/v2_detectors.py
+          src/vaanirakshak/v2_data_contract.py
+          src/vaanirakshak/v2_manifest_tools.py
+          src/vaanirakshak/v2_metrics.py
+          src/vaanirakshak/v2_calibration.py
+          src/vaanirakshak/v2_calibrate.py
+          src/vaanirakshak/v2_ssl_model.py
+          src/vaanirakshak/v2_train_ssl.py
+          src/vaanirakshak/v2_evaluate.py
+          src/vaanirakshak/v2_robustness.py
+          src/vaanirakshak/v2_robustness_eval.py
+          src/vaanirakshak/v2_prepare_sea.py
+          src/vaanirakshak/v2_prepare_benchmark.py
+          src/vaanirakshak/v2_server.py
+          scripts/v2_manifest.py
+          scripts/v2_preflight.py
+          scripts/v2_data_status.py
+      - name: Validate V2 frontend JavaScript
+        run: node --check frontend/v2/app.js

@@ -1,0 +1,18 @@
+{
+  "ASVspoof2021_LA": {
+    "repository": "SpeechAntiSpoofingBenchmarks/ASVspoof2021_LA",
+    "revision": "dc119733697c946fcd17fe7c1541d7f26b4bbe07",
+    "split": "test",
+    "dataset_name": "ASVspoof2021_LA",
+    "license": "ODC-By-1.0",
+    "role": "frozen_cross_dataset_telephony_evaluation"
+  },
+  "ASVspoof5": {
+    "repository": "SpeechAntiSpoofingBenchmarks/ASVspoof5",
+    "revision": "9937de5e630b137bb31e9f5901209b2705ddef63",
+    "split": "test",
+    "dataset_name": "ASVspoof5",
+    "license": "ODC-By-1.0",
+    "role": "frozen_modern_cross_dataset_evaluation"
+  }
+}

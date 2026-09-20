@@ -1,0 +1,6 @@
+# VaaniRakshak V2 streaming product dependencies
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+numpy>=1.26
+scipy>=1.11
+webrtcvad-wheels>=2.0.14,<3
